@@ -4,7 +4,7 @@ import { shortFrameLoad, frameLoadUnit } from './loads';
 import type { PanelSize } from './ops';
 import { defaultLoadFilter, type LoadFilterState } from './loadFilter';
 import { firstSection } from '../ui/sectionGroups';
-import { renumberLandings } from '../stair/stair';
+import { renumber } from '../stair/stair';
 
 export type ToolName =
   | 'select'
@@ -180,8 +180,12 @@ export const useApp = create<AppState>((set, get) => ({
     let next = fn(prev);
     if (next === prev) return;
     if (next.landings !== prev.landings) {
-      const landings = renumberLandings(next.landings);
+      const landings = renumber(next.landings, 'L', (l) => l.z);
       if (landings !== next.landings) next = { ...next, landings };
+    }
+    if (next.flights !== prev.flights) {
+      const flights = renumber(next.flights, 'F', (f) => f.z0);
+      if (flights !== next.flights) next = { ...next, flights };
     }
     set((s) => ({ model: next, past: [...s.past.slice(-HISTORY + 1), prev], future: [], dirty: s.dirty + 1, active: validActive(s.active, next) }));
   },

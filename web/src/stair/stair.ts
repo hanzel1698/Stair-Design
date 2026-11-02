@@ -519,10 +519,11 @@ export function nextNames(taken: string[], P: string) {
   return () => `${P}${++i}`;
 }
 
-/** Auto-named landings (L<n>) renumbered L1, L2, … from the lowest up; names the user typed stay. Returns `ls` itself when nothing changed. */
-export function renumberLandings(ls: Landing[]): Landing[] {
-  const auto = ls.filter((l) => /^L\d+$/.test(l.name)).sort((a, b) => a.z - b.z || a.x - b.x || a.y - b.y);
-  const name = new Map(auto.map((l, i) => [l.id, `L${i + 1}`]));
+/** Auto-named items (P<n>) renumbered P1, P2, … from the lowest `z` up; names the user typed stay. Returns `ls` itself when nothing changed. */
+export function renumber<T extends { id: string; name: string; x: number; y: number }>(ls: T[], P: string, z: (t: T) => number): T[] {
+  const re = new RegExp(`^${P}\\d+$`);
+  const auto = ls.filter((l) => re.test(l.name)).sort((a, b) => z(a) - z(b) || a.x - b.x || a.y - b.y);
+  const name = new Map(auto.map((l, i) => [l.id, `${P}${i + 1}`]));
   return ls.some((l) => name.has(l.id) && name.get(l.id) !== l.name) ? ls.map((l) => (name.has(l.id) ? { ...l, name: name.get(l.id)! } : l)) : ls;
 }
 

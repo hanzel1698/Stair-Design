@@ -93,3 +93,14 @@ describe('colorGroups', () => {
     expect(useApp.getState().hidden).toEqual(['b']);
   });
 });
+
+describe('flight names', () => {
+  it('stay F1, F2, … from the bottom up after a delete and redraw', () => {
+    const fl = (id: string, name: string, z0: number) => ({ id, name, x: 0, y: 0, dir: '+x' as const, n: 10, T: 250, R: 150, t: 150, width: 1200, z0 });
+    useApp.getState().setModel(emptyModel());
+    useApp.getState().commit((m) => ({ ...m, flights: [fl('a', 'F1', 0), fl('b', 'F2', 1500), fl('c', 'Ramp', 3000)] }));
+    useApp.getState().commit((m) => ({ ...m, flights: m.flights.filter((f) => f.id !== 'a') }));
+    useApp.getState().commit((m) => ({ ...m, flights: [...m.flights, fl('d', 'F3', 0)] }));
+    expect(useApp.getState().model.flights.map((f) => [f.id, f.name])).toEqual([['b', 'F2'], ['c', 'Ramp'], ['d', 'F1']]);
+  });
+});
