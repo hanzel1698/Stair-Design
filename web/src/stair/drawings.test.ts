@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { emptyModel } from '../model/types';
 import { template } from './stair';
-import { planSvg } from './drawings';
+import { planSvg, unitWeightsHtml } from './drawings';
 import { resultsHtml } from '../ui/StairPanel';
 
 describe('report drawings', () => {
@@ -24,5 +24,16 @@ describe('report drawings', () => {
     const h = planSvg(m);
     expect(h.match(/<svg /g)?.length).toBe(2);
     expect(h).toContain('Fig. 1b');
+  });
+});
+
+describe('unit weights table', () => {
+  it('lists landings and flights in walking order, bottom up', () => {
+    const m = template(emptyModel(), 'open', 'Story1', 'B300x500', 'C400x400');
+    const s = { ...m, flights: [...m.flights].reverse(), landings: [...m.landings].reverse() };
+    const rows = [...unitWeightsHtml(s, { n: 1 }).matchAll(/<tr><td>(\w+) \((flight|landing)\)/g)].map((r) => r[1]);
+    const z = (n: string) => s.flights.find((f) => f.name === n)?.z0 ?? s.landings.find((l) => l.name === n)!.z;
+    expect(rows.map(z)).toEqual(rows.map(z).sort((a, b) => a - b));
+    expect(rows.length).toBe(m.flights.length + m.landings.length);
   });
 });

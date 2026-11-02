@@ -455,7 +455,9 @@ export function unitWeightsHtml(m: Model, fig: { n: number }) {
   }
   // summary table
   h += `<table><tr><th>Element</th><th>t (mm)</th><th>w_w waist / slab (kN/m²)</th><th>w_s steps (kN/m²)</th><th>w_ff finish (kN/m²)</th><th>g = DL (kN/m²)</th><th>q = LL (kN/m²)</th><th>w_u (kN/m²)</th></tr>`;
-  for (const it of [...m.flights, ...m.landings]) {
+  // walking order: by base level, a landing before the flight that leaves it
+  const z = (it: Flight | Landing) => ('n' in it ? it.z0 : it.z);
+  for (const it of [...m.landings, ...m.flights].sort((a, b) => z(a) - z(b))) {
     const L = slabLoads(m, it);
     h += `<tr><td>${esc(it.name)} (${'n' in it ? 'flight' : 'landing'})</td><td>${it.t}</td><td>${f(L.ws)}</td><td>${f(L.st)}</td><td>${f(L.ff)}</td><td>${f(L.dl)}</td><td>${f(L.ll)}</td><td>${f(p.gf * (L.dl + L.ll))}</td></tr>`;
   }
