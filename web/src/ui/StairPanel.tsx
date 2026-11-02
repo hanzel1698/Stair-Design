@@ -50,7 +50,7 @@ export const PARAMS: Field<StairParams>[] = [
   ['R', 'Target riser (mm)'],
   ['width', 'Default flight width (mm)'],
   ['t', 'Default waist (mm)'],
-  ['tl', 'Default landing t (mm)'],
+  ['tl', 'Default landing t (mm) — kept = waist'],
 ];
 
 function Form<T extends object>({ obj, fields, onSet }: { obj: T; fields: Field<T>[]; onSet: (k: keyof T, v: string | number) => void }) {
@@ -165,7 +165,7 @@ export function StairParamsDialog() {
   const p = useApp((s) => s.model.stair);
   return (
     <Modal title="Stair design parameters">
-      <Form obj={p} fields={PARAMS} onSet={(k, v) => useApp.getState().commit((m) => ({ ...m, stair: { ...m.stair, [k]: +v } }))} />
+      <Form obj={p} fields={PARAMS} onSet={(k, v) => useApp.getState().commit((m) => ({ ...m, stair: { ...m.stair, ...(k === 't' || k === 'tl' ? { t: +v, tl: +v } : { [k]: +v }) } }))} />
     </Modal>
   );
 }
@@ -230,10 +230,11 @@ function beamTrail(m: Model, out: ReturnType<typeof beamLoads>['out']) {
 }
 const p2 = (v: number) => String(+v.toFixed(2));
 
-function suggestHtml(m: Model, sp: Span, act: boolean) {
-  const s = suggestWaist(m, sp);
+function suggestHtml(m: Model, act: boolean) {
+  const s = suggestWaist(m);
   if (!s) return '';
-  return `<div class="info">Suggested waist: thumb rule L/20 = ${s.thumb} mm${s.t > s.thumb ? `, raised to ${s.t} mm to pass deflection` : ''}. ${act ? `<button data-span="${esc(sp.id)}" data-t="${s.t}">Use ${s.t} mm waist</button>` : ''}</div>`;
+  const same = [...m.flights, ...m.landings].every((x) => x.t === s.t);
+  return `<div class="info">Suggested slab thickness: <b>${s.t} mm</b> — the least that passes flexure, shear and deflection on every span (thumb rule L/20 of the longest span = ${s.thumb} mm). ${act && !same ? `<button data-t="${s.t}">Use ${s.t} mm for all flights &amp; landings</button>` : ''}</div>`;
 }
 
 const NOTATION: [string, string, string][] = [
@@ -397,7 +398,7 @@ export function resultsHtml(m: Model, act = false) {
   for (const [b, rows] of out) h += beamLoadSvg(m, b, rows, rows.length ? fig.n++ : 0);
   h += beamTrail(m, out);
   if (warn.length) h += '<div class="card"><b class="ng">Warnings</b><ul>' + warn.map((w) => `<li>${esc(w)}</li>`).join('') + '</ul></div>';
-  h += `<h2>Slab design — IS 456:2000</h2><div class="info">M${p.fck} / Fe${p.fy}, clear cover ${p.cover} mm, main Ø${p.bar}, distribution Ø${p.dbar}, finishes ${p.ff} kN/m², live ${p.ll} kN/m², γc ${p.gc} kN/m³, γf ${p.gf}. Each span is a 1 m wide simply supported strip; effective span = c/c of supports measured horizontally (cl 33.1); depth = waist normal to the soffit (cl 33.3).</div>`;
+  h += `<h2>Slab design — IS 456:2000</h2><div class="info">M${p.fck} / Fe${p.fy}, clear cover ${p.cover} mm, main Ø${p.bar}, distribution Ø${p.dbar}, finishes ${p.ff} kN/m², live ${p.ll} kN/m², γc ${p.gc} kN/m³, γf ${p.gf}. Each span is a 1 m wide simply supported strip; effective span = c/c of supports measured horizontally (cl 33.1); depth = waist normal to the soffit (cl 33.3).</div>${suggestHtml(m, act)}`;
   for (const sp of m.spans) {
     const A = analyze(m, sp);
     if (!A) {
@@ -416,7 +417,7 @@ ${spanSectionSvg(m, sp, fig.n++)}${spanLoadSvg(m, sp, fig.n++)}
 <tr><td>Reaction at end (kN/m)</td><td>${f2(A.D.RB)}</td><td>${f2(A.LL.RB)}</td><td>${f2(A.U.RB)}</td></tr>
 <tr><td>Max moment (kNm/m)</td><td>${f2(A.D.M)}</td><td>${f2(A.LL.M)}</td><td>${f2(A.U.M)} at x = ${f2(A.U.x)} m</td></tr></table>
 <div class="calc">${designCalc(m, A)}</div>
-<b>Provide:</b> ${d.D} mm waist, Ø${p.bar} @ ${d.s} c/c main, Ø${p.dbar} @ ${d.sd} c/c distribution ${d.flex && d.shear && d.shearMax && d.defl ? '<span class="ok">— all checks OK</span>' : '<span class="ng">— revise</span>'}${d.defl ? '' : suggestHtml(m, sp, act)}</div>`;
+<b>Provide:</b> ${d.D} mm waist, Ø${p.bar} @ ${d.s} c/c main, Ø${p.dbar} @ ${d.sd} c/c distribution ${d.flex && d.shear && d.shearMax && d.defl ? '<span class="ok">— all checks OK</span>' : '<span class="ng">— revise</span>'}</div>`;
   }
   if (!m.spans.length) h += '<div class="info">No spans yet — draw spans or use Stair → Auto spans.</div>';
   h += '<h2>Flight geometry</h2><table><tr><th>Flight</th><th>Risers</th><th>R (mm)</th><th>T (mm)</th><th>2R+T</th><th>Going (m)</th><th>Rise (m)</th><th>Levels (mm)</th></tr>';
@@ -430,13 +431,9 @@ ${spanSectionSvg(m, sp, fig.n++)}${spanLoadSvg(m, sp, fig.n++)}
 
 /** Applies a suggested waist; the dialog re-renders the results from the new model. */
 function applyWaist(e: { target: EventTarget }) {
-  const btn = (e.target as HTMLElement).closest<HTMLElement>('button[data-span]');
+  const btn = (e.target as HTMLElement).closest<HTMLElement>('button[data-t]');
   if (!btn) return;
-  useApp.getState().commit((m) => {
-    const sp = m.spans.find((x) => x.id === btn.dataset.span);
-    const s = sp && suggestWaist(m, sp);
-    return s ? withWaist(m, s.ids, +btn.dataset.t!) : m;
-  });
+  useApp.getState().commit((m) => withWaist(m, +btn.dataset.t!));
 }
 
 export function StairResultsDialog() {

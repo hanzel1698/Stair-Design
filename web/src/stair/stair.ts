@@ -1,4 +1,4 @@
-import { beamEndsZ, placeAt, storyElevations, uid, type Beam, type Flight, type FlightDir, type Landing, type Model, type Pt, type Span } from '../model/types';
+import { beamEndsZ, LEVEL_TOL, placeAt, storyElevations, uid, type Beam, type Flight, type FlightDir, type Landing, type Model, type Pt, type Span } from '../model/types';
 import { addColumns, gridIntersections, makeGrid } from '../model/ops';
 
 // Plan geometry in mm, like the rest of the model. Loads in kN, kN/m, kN/m²; statics in metres.
@@ -165,7 +165,13 @@ const spanU = (sp: Span): [number, number] => {
   return [(sp.x2 - sp.x1) / L, (sp.y2 - sp.y1) / L];
 };
 const rectOfStair = (it: Flight | Landing) => ('n' in it ? frame(it).r : landingRect(it));
-const crosses = (sp: Span, it: Flight | Landing) => clip(sp.x1, sp.y1, sp.x2, sp.y2, rectOfStair(it));
+/** Where the span line cuts the member in plan, for members within the span's story only (stacked flights overlap in plan). */
+const crosses = (m: Model, sp: Span, it: Flight | Landing) => {
+  const e = storyElevations(m)[sp.story],
+    [lo, hi] = 'n' in it ? [it.z0, it.z0 + it.n * it.R] : [it.z, it.z];
+  if (e && (lo < e.bottom - LEVEL_TOL || hi > e.top + LEVEL_TOL)) return null;
+  return clip(sp.x1, sp.y1, sp.x2, sp.y2, rectOfStair(it));
+};
 
 /** Simply supported beam (m, kN/m), piecewise UDL segments {a, b, w}. */
 export function ssBeam(segs: { a: number; b: number; w: number }[], L: number) {
@@ -227,7 +233,7 @@ export interface Transfer {
 function levelOn(m: Model, o: Span, P: number[]) {
   for (const it of [...m.flights, ...m.landings]) {
     const r = rectOfStair(it);
-    if (P[0] < r.x0 - 1 || P[0] > r.x1 + 1 || P[1] < r.y0 - 1 || P[1] > r.y1 + 1 || !crosses(o, it)) continue;
+    if (P[0] < r.x0 - 1 || P[0] > r.x1 + 1 || P[1] < r.y0 - 1 || P[1] > r.y1 + 1 || !crosses(m, o, it)) continue;
     return 'n' in it ? flightLevel(it, P[0], P[1]) : it.z;
   }
   return null;
@@ -289,7 +295,7 @@ function spanGeom(m: Model, sp: Span) {
   const u = spanU(sp),
     segs: Seg[] = [];
   for (const it of [...m.flights, ...m.landings]) {
-    const c = crosses(sp, it);
+    const c = crosses(m, sp, it);
     if (!c) continue;
     // IS 456 cl 33.2: area common to two spans at right angles carries half the load each way
     let k = 1;
@@ -298,7 +304,7 @@ function spanGeom(m: Model, sp: Span) {
       m.spans.some((o) => {
         if (o === sp) return false;
         const v = spanU(o);
-        return Math.abs(u[0] * v[0] + u[1] * v[1]) < 0.5 && crosses(o, it);
+        return Math.abs(u[0] * v[0] + u[1] * v[1]) < 0.5 && crosses(m, o, it);
       })
     )
       k = 0.5;
@@ -348,22 +354,27 @@ function finish(m: Model, sp: Span, G: NonNullable<ReturnType<typeof spanGeom>>,
   return { ...G, tr, D, LL, U, t, des: design(m, U, t, L) };
 }
 
-/** The span's flights (or its landings, if it has none) set to waist `t`. */
-export function withWaist(m: Model, ids: Set<string>, t: number): Model {
-  const set = <T extends { id: string; t: number }>(xs: T[]) => xs.map((x) => (ids.has(x.id) ? { ...x, t } : x));
-  return { ...m, flights: set(m.flights), landings: set(m.landings) };
+/** One slab thickness throughout the stair: every flight waist, every landing and both defaults set to `t`. */
+export function withWaist(m: Model, t: number): Model {
+  const set = <T extends { t: number }>(xs: T[]) => xs.map((x) => ({ ...x, t }));
+  return { ...m, flights: set(m.flights), landings: set(m.landings), stair: { ...m.stair, t, tl: t } };
 }
 
-/** Thumb-rule waist L/20 (10 mm steps), raised until the span passes the deflection check with its own self weight. */
-export function suggestWaist(m: Model, sp: Span) {
-  const A = analyze(m, sp);
-  if (!A) return null;
-  const fl = A.segs.filter((s) => 'n' in s.it);
-  const ids = new Set((fl.length ? fl : A.segs).map((s) => s.it.id));
-  const thumb = Math.ceil(A.L * 5) * 10;
-  let t = Math.max(thumb, A.t + 10);
-  while (t < 600 && !analyze(withWaist(m, ids, t), sp)?.des.defl) t += 10;
-  return { thumb, t, ids };
+/** Least uniform slab thickness (10 mm steps, from 100) that passes every check on every span, with its own self weight; `thumb` = L/20 of the longest span, for reference. */
+export function suggestWaist(m: Model) {
+  const Ls = m.spans.map((sp) => analyze(m, sp)?.L).filter((L) => L !== undefined);
+  if (!Ls.length) return null;
+  const thumb = Math.ceil(Math.max(...Ls) * 5) * 10;
+  const ok = (t: number) => {
+    const mm = withWaist(m, t);
+    return mm.spans.every((sp) => {
+      const d = analyze(mm, sp)?.des;
+      return !d || (d.flex && d.shear && d.shearMax && d.defl);
+    });
+  };
+  let t = 100;
+  while (t < 600 && !ok(t)) t += 10;
+  return { thumb, t };
 }
 
 // ---------- IS 456 design ----------
@@ -452,7 +463,7 @@ export function beamLoads(m: Model) {
       out.get(s.beam)!.push({ sp, e: e as 0 | 1, a, b, dl: A.D[R], ll: A.LL[R], fu: A.U[R] });
     });
   }
-  for (const f of m.flights) if (!m.spans.some((sp) => crosses(sp, f))) warn.push(`${f.name}: not covered by any span — its load is not reaching any beam`);
+  for (const f of m.flights) if (!m.spans.some((sp) => crosses(m, sp, f))) warn.push(`${f.name}: not covered by any span — its load is not reaching any beam`);
   return { out, warn };
 }
 

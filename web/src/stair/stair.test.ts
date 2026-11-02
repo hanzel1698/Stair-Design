@@ -30,6 +30,14 @@ describe('templates', () => {
     const { warn } = beamLoads(m);
     expect(warn).toEqual([]);
   });
+  it('a landing stacked above in plan, on a higher story, is not part of the span', () => {
+    const m = template(emptyModel(), 'dog', 'Story1', 'B300x500', 'C400x400');
+    const sp = m.spans[0],
+      before = analyze(m, sp)!.segs.map((s) => [s.a, s.b]),
+      l = m.landings[0];
+    const up = { ...m, landings: [...m.landings, { ...l, id: 'up', name: 'Lup', x: -5000, y: -5000, w: 20000, h: 20000, z: l.z + 10000 }] };
+    expect(analyze(up, sp)!.segs.map((s) => [s.a, s.b])).toEqual(before);
+  });
   it('quarter-turn without a beam past the landing: the first flight rests on the second span', () => {
     const t = template(emptyModel(), 'L', 'Story1', 'B300x500', 'C400x400');
     const m = autoSpans({ ...t, beams: t.beams.filter((b) => !(b.x1 === b.x2 && b.x1 > 0)) });
@@ -54,8 +62,9 @@ describe('waist suggestion', () => {
     const m = { ...t, flights: t.flights.map((f) => ({ ...f, t: 80 })) };
     const sp = m.spans[0];
     expect(analyze(m, sp)!.des.defl).toBe(false);
-    const s = suggestWaist(m, sp)!;
-    expect(s.t).toBeGreaterThanOrEqual(s.thumb);
-    expect(analyze(withWaist(m, s.ids, s.t), sp)!.des.defl).toBe(true);
+    const s = suggestWaist(m)!;
+    const ok = (t: number) => m.spans.every((x) => { const d = analyze(withWaist(m, t), x)!.des; return d.flex && d.shear && d.shearMax && d.defl; });
+    expect(ok(s.t)).toBe(true);
+    expect(ok(s.t - 10)).toBe(false);
   });
 });
