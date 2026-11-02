@@ -117,9 +117,17 @@ function beamZ(el: ReturnType<typeof storyElevations>, b: Beam, s: number) {
   return z[0] + ((z[1] - z[0]) * clamp(s / beamLen(b), 0, 1));
 }
 
+const beamRanks = new WeakMap<Beam[], Map<Beam, number>>();
+/** B1, B2, … from the lowest beam up (then by x, y), like flights and landings. */
 export function beamName(m: Model, b: Beam) {
-  const i = m.beams.indexOf(b);
-  return `B${i + 1}`;
+  let r = beamRanks.get(m.beams);
+  if (!r) {
+    const el = storyElevations(m),
+      z = (x: Beam) => Math.min(...(beamEndsZ(el, x) ?? [0]));
+    const xs = [...m.beams].sort((a, c) => z(a) - z(c) || Math.min(a.x1, a.x2) - Math.min(c.x1, c.x2) || Math.min(a.y1, a.y2) - Math.min(c.y1, c.y2));
+    beamRanks.set(m.beams, (r = new Map(xs.map((x, i) => [x, i + 1]))));
+  }
+  return `B${r.get(b) ?? m.beams.indexOf(b) + 1}`;
 }
 
 /** "grid 2 (A – B)" for a beam on a grid line. */

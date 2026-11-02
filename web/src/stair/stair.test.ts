@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emptyModel } from '../model/types';
-import { analyze, autoSpans, beamLoads, kSlab, ssBeam, suggestWaist, tauC, template, withWaist } from './stair';
+import { analyze, autoSpans, beamLoads, beamName, kSlab, ssBeam, suggestWaist, tauC, template, withWaist } from './stair';
 
 describe('stair statics and IS 456 tables', () => {
   it('simply supported UDL and partial load', () => {
@@ -66,5 +66,17 @@ describe('waist suggestion', () => {
     const ok = (t: number) => m.spans.every((x) => { const d = analyze(withWaist(m, t), x)!.des; return d.flex && d.shear && d.shearMax && d.defl; });
     expect(ok(s.t)).toBe(true);
     expect(ok(s.t - 10)).toBe(false);
+  });
+});
+
+describe('beam names', () => {
+  it('B1, B2, … from the lowest beam up, whatever the list order', () => {
+    const m = template(emptyModel(), 'dog', 'Story1', 'B300x500', 'C400x400');
+    const shuffled = { ...m, beams: [...m.beams].reverse() };
+    const names = (x: typeof m) => new Map(x.beams.map((b) => [b, beamName(x, b)]));
+    expect(names(shuffled)).toEqual(names(m));
+    const z = (b: (typeof m.beams)[number]) => b.dz ?? 0;
+    const byName = [...m.beams].sort((a, b) => +beamName(m, a).slice(1) - +beamName(m, b).slice(1));
+    expect(byName.map(z)).toEqual([...byName.map(z)].sort((a, b) => a - b));
   });
 });
