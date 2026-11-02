@@ -1,0 +1,972 @@
+import type { Beam, Column, FrameLoad, Grid, Model, Pt, Slab } from './types';
+import { columnOn, columnStories, uid, storyElevations, levelZ, placeAt, withDz } from './types';
+import { assignJointLoad, frameLoadKey, jointLoadsAt, mergedLoads, moveJointLoads, shellLoadKey } from './loads';
+import { alphaLabel, dist, distToSeg, lineIntersect, polyArea, pointInPoly, segIntersect, sub, cross } from './geom';
+
+const TOL = 1; // mm, coincidence tolerance
+
+// ---------- grids ----------
+
+export interface GridGenSpec {
+  xSpacing: number[];
+  ySpacing: number[];
+  x0: number;
+  y0: number;
+  xLabelStart: string; // 'A' or '1'
+  yLabelStart: string;
+  extend: number;
+}
+
+/** n consecutive labels from `start` ("A", "1", "AA", "G1", "a"...). */
+function labelSeq(start: string, n: number): string[] {
+  const p = parseGridLabel(start) ?? { prefix: '', kind: 'alpha' as const, value: 1, lower: false };
+  return Array.from({ length: n }, (_, i) => formatLabel({ ...p, value: p.value + i }));
+}
+
+export function generateGrids(s: GridGenSpec): Grid[] {
+  const xs = [s.x0];
+  s.xSpacing.forEach((d) => xs.push(xs[xs.length - 1] + d));
+  const ys = [s.y0];
+  s.ySpacing.forEach((d) => ys.push(ys[ys.length - 1] + d));
+  const minX = xs[0] - s.extend,
+    maxX = xs[xs.length - 1] + s.extend;
+  const minY = ys[0] - s.extend,
+    maxY = ys[ys.length - 1] + s.extend;
+  const xl = labelSeq(s.xLabelStart, xs.length);
+  const yl = labelSeq(s.yLabelStart, ys.length);
+  return [
+    ...xs.map<Grid>((x, i) => ({ id: uid(), label: xl[i], dir: 'X', x1: x, y1: minY, x2: x, y2: maxY, bubble: 'both' })),
+    ...ys.map<Grid>((y, i) => ({ id: uid(), label: yl[i], dir: 'Y', x1: minX, y1: y, x2: maxX, y2: y, bubble: 'both' })),
+  ];
+}
+
+/** Classify a 2-point grid as X / Y / general. */
+export function makeGrid(a: Pt, b: Pt, label: string): Grid {
+  let dir: Grid['dir'] = 'G';
+  if (Math.abs(a.x - b.x) < TOL) dir = 'X';
+  else if (Math.abs(a.y - b.y) < TOL) dir = 'Y';
+  return { id: uid(), label, dir, x1: a.x, y1: a.y, x2: b.x, y2: b.y, bubble: 'both' };
+}
+
+export function gridIntersections(grids: Grid[]): Pt[] {
+  const out: Pt[] = [];
+  for (let i = 0; i < grids.length; i++)
+    for (let j = i + 1; j < grids.length; j++) {
+      const g = grids[i],
+        h = grids[j];
+      const r = segIntersect({ x: g.x1, y: g.y1 }, { x: g.x2, y: g.y2 }, { x: h.x1, y: h.y1 }, { x: h.x2, y: h.y2 });
+      if (r) out.push(r.p);
+    }
+  return out;
+}
+
+/**
+ * A grid label split into prefix + core + suffix, e.g. "1'" → core 1 + suffix "'",
+ * "AA" → core 27 (alpha), "G3" → prefix "G" + core 3. Suffixes (primes, quotes) mark
+ * intermediate grids and are ignored when continuing the sequence.
+ */
+export interface LabelParts {
+  prefix: string;
+  kind: 'num' | 'alpha';
+  value: number;
+  lower: boolean;
+}
+
+export function parseGridLabel(label: string): LabelParts | null {
+  const m = label.trim().match(/^(.*?)(\d+|[A-Za-z]+)([^A-Za-z0-9]*)$/);
+  if (!m) return null;
+  const [, prefix, core] = m;
+  if (/^\d+$/.test(core)) return { prefix, kind: 'num', value: parseInt(core, 10), lower: false };
+  let v = 0;
+  for (const ch of core.toUpperCase()) v = v * 26 + (ch.charCodeAt(0) - 64);
+  return { prefix, kind: 'alpha', value: v, lower: core === core.toLowerCase() };
+}
+
+const formatLabel = (p: LabelParts) => {
+  const core = p.kind === 'num' ? String(p.value) : alphaLabel(p.value - 1);
+  return p.prefix + (p.lower ? core.toLowerCase() : core);
+};
+
+/**
+ * Next label for a new grid in `dir`:
+ * - continues the scheme of the most recently added grid in that direction ("1" → "2",
+ *   "C" → "D", "1'" → "2", "G3" → "G4"), counting from the highest label of that scheme;
+ * - with no grids in that direction yet, uses the opposite scheme of the other direction
+ *   (letters there → numbers here, and vice versa); defaults are X = "A", Y = "1".
+ */
+export function nextGridLabel(grids: Grid[], dir: Grid['dir']): string {
+  const same = grids.filter((g) => g.dir === dir);
+  const used = new Set(same.map((g) => g.label));
+  let scheme: LabelParts | null = null;
+  for (let i = same.length - 1; i >= 0 && !scheme; i--) scheme = parseGridLabel(same[i].label);
+
+  if (!scheme) {
+    if (dir === 'G') scheme = { prefix: 'G', kind: 'num', value: 0, lower: false };
+    else {
+      const other = grids.filter((g) => g.dir === (dir === 'X' ? 'Y' : 'X'));
+      let o: LabelParts | null = null;
+      for (let i = other.length - 1; i >= 0 && !o; i--) o = parseGridLabel(other[i].label);
+      const kind = o ? (o.kind === 'alpha' ? 'num' : 'alpha') : dir === 'X' ? 'alpha' : 'num';
+      scheme = { prefix: '', kind, value: 0, lower: false };
+    }
+  } else {
+    // continue from the highest label that follows the same scheme
+    for (const g of same) {
+      const p = parseGridLabel(g.label);
+      if (p && p.kind === scheme.kind && p.prefix === scheme.prefix && p.value > scheme.value) scheme = { ...scheme, value: p.value };
+    }
+  }
+  let next = { ...scheme, value: scheme.value + 1 };
+  while (used.has(formatLabel(next))) next = { ...next, value: next.value + 1 };
+  return formatLabel(next);
+}
+
+/** Opposite labelling scheme for the other direction: letters ↔ numbers. */
+export function oppositeLabelStart(label: string): string {
+  return parseGridLabel(label)?.kind === 'num' ? 'A' : '1';
+}
+
+// ---------- elements ----------
+
+/** Columns on each of `stories`, their tops `dz` mm off the story level. A place that already has a column on that story is skipped. */
+export function addColumns(m: Model, pts: Pt[], stories: string[], section: string, angle: number, dz = 0): Model {
+  const cols = [...m.columns];
+  for (const story of stories)
+    for (const p of pts) {
+      if (cols.some((c) => columnOn(m, c, story) && Math.abs(c.x - p.x) < TOL && Math.abs(c.y - p.y) < TOL)) continue;
+      cols.push(withDz({ id: uid(), story, x: p.x, y: p.y, section, angle }, dz));
+    }
+  return cols.length === m.columns.length ? m : { ...m, columns: cols };
+}
+
+const sameDz = (x: { dz?: number }, dz: number) => Math.abs((x.dz ?? 0) - dz) < TOL;
+
+const sameBeam = (b: Beam, a: Pt, c: Pt) =>
+  (dist({ x: b.x1, y: b.y1 }, a) < TOL && dist({ x: b.x2, y: b.y2 }, c) < TOL) ||
+  (dist({ x: b.x1, y: b.y1 }, c) < TOL && dist({ x: b.x2, y: b.y2 }, a) < TOL);
+
+/** Beams on each of `stories`, `dz` mm off the story level. A beam already at that place and level is skipped. */
+export function addBeams(m: Model, segs: [Pt, Pt][], stories: string[], section: string, dz = 0): Model {
+  const beams = [...m.beams];
+  for (const story of stories)
+    for (const [a, b] of segs) {
+      if (dist(a, b) < TOL) continue;
+      if (beams.some((x) => x.story === story && sameDz(x, dz) && sameBeam(x, a, b))) continue;
+      beams.push(withDz({ id: uid(), story, x1: a.x, y1: a.y, x2: b.x, y2: b.y, section }, dz));
+    }
+  return beams.length === m.beams.length ? m : { ...m, beams };
+}
+
+export function addSlab(m: Model, pts: Pt[], story: string, section: string): Model {
+  if (pts.length < 3 || Math.abs(polyArea(pts)) < 1) return m;
+  const ccw = polyArea(pts) < 0 ? [...pts].reverse() : pts;
+  return { ...m, slabs: [...m.slabs, { id: uid(), story, pts: ccw, section }] };
+}
+
+/** Beams along grid lines between consecutive columns on the given story. */
+export function autoBeamsOnGrids(m: Model, story: string, section: string): Model {
+  const cols = m.columns.filter((c) => columnOn(m, c, story));
+  const segs: [Pt, Pt][] = [];
+  for (const g of m.grids) {
+    const a = { x: g.x1, y: g.y1 },
+      b = { x: g.x2, y: g.y2 };
+    const d = sub(b, a);
+    const L = Math.hypot(d.x, d.y);
+    const on = cols
+      .filter((c) => Math.abs(cross(d, sub(c, a))) / L < TOL * 5)
+      .map((c) => ({ p: { x: c.x, y: c.y }, t: ((c.x - a.x) * d.x + (c.y - a.y) * d.y) / L }))
+      .sort((p, q) => p.t - q.t);
+    for (let i = 0; i + 1 < on.length; i++) segs.push([on[i].p, on[i + 1].p]);
+  }
+  return addBeams(m, segs, [story], section);
+}
+
+// ---------- nodes (derived, not stored) ----------
+
+export type NodeSource = 'grid' | 'column' | 'beam';
+export interface PlanNode {
+  id: string; // 'node:x,y' (mm, rounded), stable while the geometry is unchanged
+  x: number;
+  y: number;
+  from: NodeSource[];
+}
+
+export const isNodeId = (id: string) => id.startsWith('node:');
+
+/** Points of interest on a story: grid intersections, column centres and beam-to-beam intersections, merged within TOL. */
+export function storyNodes(m: Model, story: string): PlanNode[] {
+  const out: PlanNode[] = [];
+  const add = (p: Pt, src: NodeSource) => {
+    const n = out.find((o) => Math.abs(o.x - p.x) < TOL && Math.abs(o.y - p.y) < TOL);
+    if (n) {
+      if (!n.from.includes(src)) n.from.push(src);
+    } else out.push({ id: '', x: p.x, y: p.y, from: [src] });
+  };
+  gridIntersections(m.grids).forEach((p) => add(p, 'grid'));
+  // elements off the story level (on a reference plane) have no joints at it
+  m.columns.forEach((c) => columnOn(m, c, story) && !(c.story === story && c.dz) && add(c, 'column'));
+  const beams = m.beams.filter((b) => b.story === story && !b.dz);
+  for (let i = 0; i < beams.length; i++)
+    for (let j = i + 1; j < beams.length; j++) {
+      const a = beams[i],
+        b = beams[j];
+      const r = segIntersect({ x: a.x1, y: a.y1 }, { x: a.x2, y: a.y2 }, { x: b.x1, y: b.y1 }, { x: b.x2, y: b.y2 }, 1e-4);
+      if (r) add(r.p, 'beam');
+    }
+  out.forEach((n) => (n.id = `node:${Math.round(n.x)},${Math.round(n.y)}`));
+  return out;
+}
+
+const nodeCache = new WeakMap<Model, Map<string, PlanNode[]>>();
+export function cachedStoryNodes(m: Model, story: string): PlanNode[] {
+  let byStory = nodeCache.get(m);
+  if (!byStory) nodeCache.set(m, (byStory = new Map()));
+  let v = byStory.get(story);
+  if (!v) byStory.set(story, (v = storyNodes(m, story)));
+  return v;
+}
+
+export function deleteIds(m: Model, ids: string[]): Model {
+  const s = new Set(ids);
+  return {
+    ...m,
+    grids: m.grids.filter((x) => !s.has(x.id)),
+    columns: m.columns.filter((x) => !s.has(x.id)),
+    beams: m.beams.filter((x) => !s.has(x.id)),
+    slabs: m.slabs.filter((x) => !s.has(x.id)),
+    flights: m.flights.filter((x) => !s.has(x.id)),
+    landings: m.landings.filter((x) => !s.has(x.id)),
+    spans: m.spans.filter((x) => !s.has(x.id)),
+  };
+}
+
+const mvCol = (c: Column, dx: number, dy: number): Column => ({ ...c, x: c.x + dx, y: c.y + dy });
+const mvBeam = (b: Beam, dx: number, dy: number): Beam => ({ ...b, x1: b.x1 + dx, y1: b.y1 + dy, x2: b.x2 + dx, y2: b.y2 + dy });
+const mvSlab = (s: Slab, dx: number, dy: number): Slab => ({ ...s, pts: s.pts.map((p) => ({ x: p.x + dx, y: p.y + dy })) });
+const mvGrid = (g: Grid, dx: number, dy: number): Grid => ({ ...g, x1: g.x1 + dx, y1: g.y1 + dy, x2: g.x2 + dx, y2: g.y2 + dy });
+
+/** The story whose level sits `dz` mm above (or below, if negative) `story`'s level, or null if no story is there. */
+export function storyAtOffset(m: Model, story: string, dz: number): string | null {
+  const el = storyElevations(m);
+  if (!el[story]) return null;
+  const target = el[story].top + dz;
+  return m.stories.find((s) => Math.abs(el[s.name].top - target) < TOL)?.name ?? null;
+}
+
+/**
+ * Where an element lands when its level (a column's top) goes `dz` mm up or down: the story it then lies in and its offset
+ * from that story's level (see placeAt). A joined column keeps its number of stories, so it only moves from level to
+ * story level. Null when it has nowhere to go: a column top at or below the base, or a joined column that would leave
+ * the story levels or run out of stories.
+ */
+export function lift<T extends { story: string; dz?: number; base?: string }>(m: Model, x: T, dz: number, column = false): T | null {
+  const z = levelZ(storyElevations(m), x);
+  if (z === null) return null;
+  if (column && z + dz <= m.baseElevation + TOL) return null;
+  const p = placeAt(m, z + dz);
+  if (!p) return null;
+  const out = withDz({ ...x, story: p.story }, p.dz);
+  // a sloped beam keeps its rise between its ends
+  const d2 = (x as { dz2?: number }).dz2;
+  if (d2 !== undefined) (out as { dz2?: number }).dz2 = p.dz + d2 - (x.dz ?? 0);
+  if (!x.base) return out;
+  if (p.dz) return null;
+  const names = m.stories.map((s) => s.name);
+  const b = names.indexOf(x.base) + names.indexOf(p.story) - names.indexOf(x.story);
+  return b >= 0 && b < names.length ? { ...out, base: names[b] } : null;
+}
+
+/**
+ * Move by (dx,dy) in plan and dz mm up/down (grids ignore dz). Elements land on whatever level that is: a story level,
+ * or between levels (a reference plane) as an offset from the story they then lie in. Those with nowhere to go (see lift) stay on theirs.
+ */
+export function moveIds(m: Model, ids: string[], dx: number, dy: number, dz = 0): Model {
+  const s = new Set(ids);
+  const up = <T extends { story: string; dz?: number; base?: string }>(x: T, column = false): T => (dz ? lift(m, x, dz, column) ?? x : x);
+  const out = {
+    ...m,
+    grids: m.grids.map((x) => (s.has(x.id) ? mvGrid(x, dx, dy) : x)),
+    columns: m.columns.map((x) => (s.has(x.id) ? up(mvCol(x, dx, dy), true) : x)),
+    beams: m.beams.map((x) => (s.has(x.id) ? up(mvBeam(x, dx, dy)) : x)),
+    slabs: m.slabs.map((x) => (s.has(x.id) ? up(mvSlab(x, dx, dy)) : x)),
+    flights: m.flights.map((x) => (s.has(x.id) ? { ...x, x: x.x + dx, y: x.y + dy, z0: x.z0 + dz } : x)),
+    landings: m.landings.map((x) => (s.has(x.id) ? { ...x, x: x.x + dx, y: x.y + dy, z: x.z + dz } : x)),
+    spans: m.spans.map((x) => (s.has(x.id) ? { ...x, x1: x.x1 + dx, y1: x.y1 + dy, x2: x.x2 + dx, y2: x.y2 + dy } : x)),
+  };
+  // joint loads ride on the tops of the columns they sit on
+  const moved = m.columns.flatMap((c, i) => {
+    const n = out.columns[i];
+    return s.has(c.id) && (n.x !== c.x || n.y !== c.y || n.story !== c.story || n.dz !== c.dz) ? [{ story: c.story, dz: c.dz, from: { x: c.x, y: c.y }, to: { x: n.x, y: n.y }, toStory: n.story, toDz: n.dz }] : [];
+  });
+  return moved.length ? { ...out, jointLoads: moveJointLoads(m, moved) } : out;
+}
+
+/**
+ * Replicate linearly n times by (dx,dy), or onto other levels: `stories` and reference planes at elevations `planes`
+ * (copies there sit off the story they lie in, see placeAt). Duplicates are skipped.
+ */
+export function replicate(m: Model, ids: string[], opts: { dx: number; dy: number; n: number; stories: string[] | null; planes?: number[] }): { model: Model; created: string[] } {
+  const s = new Set(ids);
+  const created: string[] = [];
+  let out = m;
+  const cols = m.columns.filter((x) => s.has(x.id));
+  const beams = m.beams.filter((x) => s.has(x.id));
+  const slabs = m.slabs.filter((x) => s.has(x.id));
+  const toLevels = !!opts.stories || !!opts.planes?.length;
+  type Level = { story: string; dz: number };
+  const levels: Level[] = [
+    ...(opts.stories ?? []).map((story) => ({ story, dz: 0 })),
+    ...(opts.planes ?? []).flatMap((z) => placeAt(m, z) ?? []),
+  ];
+  const steps = toLevels ? [0] : Array.from({ length: Math.max(1, opts.n) }, (_, i) => i + 1);
+  const same = (a: Level, b: { story: string; dz?: number }) => a.story === b.story && Math.abs(a.dz - (b.dz ?? 0)) < TOL;
+  const targets = (orig: { story: string; dz?: number }): Level[] => (toLevels ? levels.filter((l) => !same(l, orig) || opts.dx || opts.dy) : [{ story: orig.story, dz: orig.dz ?? 0 }]);
+  // A column only spans one storey, so an unshifted copy to a level further up or down also fills the storeys in between,
+  // otherwise it would float above (or hang below) the original with a gap.
+  const names = m.stories.map((x) => x.name);
+  const colTargets = (c: Column): Level[] => {
+    const t = targets(c);
+    const o = names.indexOf(c.story);
+    if (!toLevels || opts.dx || opts.dy || o < 0) return t;
+    const fill = new Map<string, Level>();
+    for (const l of t) {
+      const i = names.indexOf(l.story);
+      if (i < 0) continue;
+      for (let j = Math.min(o, i); j <= Math.max(o, i); j++) {
+        const at = j === i ? l : { story: names[j], dz: 0 };
+        if (!same(at, c)) fill.set(`${at.story}|${at.dz}`, at);
+      }
+    }
+    return [...fill.values()].sort((a, b) => names.indexOf(a.story) - names.indexOf(b.story) || a.dz - b.dz);
+  };
+  for (const k of steps) {
+    const dx = toLevels ? opts.dx : opts.dx * k,
+      dy = toLevels ? opts.dy : opts.dy * k;
+    for (const c of cols)
+      for (const l of colTargets(c)) {
+        const before = out.columns.length;
+        out = addColumns(out, [{ x: c.x + dx, y: c.y + dy }], [l.story], c.section, c.angle, l.dz);
+        if (out.columns.length === before) continue;
+        const copy = out.columns[out.columns.length - 1];
+        // a joined column copied on its own level keeps its span; loads and the joint loads on it come along
+        const full = { ...copy, ...(c.base && same(l, c) ? { base: c.base } : {}), ...(c.loads ? { loads: c.loads } : {}) };
+        out = { ...out, columns: [...out.columns.slice(0, -1), full] };
+        for (const j of jointLoadsAt(m, c.story, c, c.dz)) out = assignJointLoad(out, [l.story], [{ x: c.x + dx, y: c.y + dy }], j, 'replace', l.dz);
+        created.push(copy.id);
+      }
+    for (const b of beams)
+      for (const l of targets(b)) {
+        const before = out.beams.length;
+        out = addBeams(out, [[{ x: b.x1 + dx, y: b.y1 + dy }, { x: b.x2 + dx, y: b.y2 + dy }]], [l.story], b.section, l.dz);
+        if (out.beams.length === before) continue;
+        if (b.loads) out = { ...out, beams: [...out.beams.slice(0, -1), { ...out.beams[out.beams.length - 1], loads: b.loads }] };
+        created.push(out.beams[out.beams.length - 1].id);
+      }
+    for (const sl of slabs)
+      for (const l of targets(sl)) {
+        const pts = sl.pts.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+        const dup = out.slabs.some((o) => same(l, o) && o.pts.length === pts.length && o.pts.every((p, i) => dist(p, pts[i]) < TOL));
+        if (dup) continue;
+        out = { ...out, slabs: [...out.slabs, withDz({ id: uid(), story: l.story, pts, section: sl.section, ...(sl.loads ? { loads: sl.loads } : {}) }, l.dz)] };
+        created.push(out.slabs[out.slabs.length - 1].id);
+      }
+  }
+  return { model: out, created };
+}
+
+/** Move one end of a beam (1 = start, 2 = end). A move that would leave a zero-length beam is ignored. */
+export function setBeamEnd(m: Model, id: string, end: 1 | 2, p: Pt): Model {
+  const b = m.beams.find((x) => x.id === id);
+  if (!b) return m;
+  const other = end === 1 ? { x: b.x2, y: b.y2 } : { x: b.x1, y: b.y1 };
+  const cur = end === 1 ? { x: b.x1, y: b.y1 } : { x: b.x2, y: b.y2 };
+  if (dist(other, p) < 1 || (cur.x === p.x && cur.y === p.y)) return m;
+  const nb = end === 1 ? { ...b, x1: p.x, y1: p.y } : { ...b, x2: p.x, y2: p.y };
+  return { ...m, beams: m.beams.map((x) => (x.id === id ? nb : x)) };
+}
+
+/** Moves one end of a grid along its own line (extend or shorten), so the grid keeps its direction. */
+export function setGridEnd(m: Model, id: string, end: 1 | 2, p: Pt): Model {
+  const g = m.grids.find((x) => x.id === id);
+  if (!g) return m;
+  const q = onGridLine(g, p);
+  const other = end === 1 ? { x: g.x2, y: g.y2 } : { x: g.x1, y: g.y1 };
+  if (dist(other, q) < 1) return m;
+  const ng = end === 1 ? { ...g, x1: q.x, y1: q.y } : { ...g, x2: q.x, y2: q.y };
+  return { ...m, grids: m.grids.map((x) => (x.id === id ? ng : x)) };
+}
+
+/** p projected onto the (unbounded) line of grid g. */
+export function onGridLine(g: Grid, p: Pt): Pt {
+  const dx = g.x2 - g.x1,
+    dy = g.y2 - g.y1;
+  const t = ((p.x - g.x1) * dx + (p.y - g.y1) * dy) / (dx * dx + dy * dy || 1);
+  return { x: g.x1 + t * dx, y: g.y1 + t * dy };
+}
+
+export function patchIds(m: Model, ids: string[], patch: { section?: string; story?: string; angle?: number }): Model {
+  const s = new Set(ids);
+  const p = (o: any) => {
+    if (!s.has(o.id)) return o;
+    const n = { ...o };
+    if (patch.story !== undefined) {
+      n.story = patch.story;
+      delete n.base;
+      delete n.dz;
+    }
+    if (patch.section !== undefined) n.section = patch.section;
+    if (patch.angle !== undefined && 'angle' in o) n.angle = patch.angle;
+    return n;
+  };
+  return { ...m, columns: m.columns.map(p), beams: m.beams.map(p), slabs: m.slabs.map(p) };
+}
+
+// ---------- bay detection for slabs ----------
+
+/**
+ * Bounded faces (CCW) of the planar graph the segments form, split at every crossing and where one
+ * segment ends on a parallel one. With `prune`, dangling edges (beams that stop short) are dropped first.
+ */
+function planarFaces(segs: [Pt, Pt][], prune = false): Pt[][] {
+  // split segments at intersections
+  const cuts: number[][] = segs.map(() => [0, 1]);
+  const along = (q: Pt, [a, b]: [Pt, Pt]) => {
+    const d = sub(b, a);
+    const L = Math.hypot(d.x, d.y);
+    if (L < TOL || Math.abs(cross(d, sub(q, a))) / L > 0.5) return null;
+    const t = ((q.x - a.x) * d.x + (q.y - a.y) * d.y) / (L * L);
+    return t > 1e-6 && t < 1 - 1e-6 ? t : null;
+  };
+  for (let i = 0; i < segs.length; i++)
+    for (let j = i + 1; j < segs.length; j++) {
+      const r = segIntersect(segs[i][0], segs[i][1], segs[j][0], segs[j][1], 1e-4);
+      if (r) {
+        cuts[i].push(Math.min(1, Math.max(0, r.t)));
+        cuts[j].push(Math.min(1, Math.max(0, r.u)));
+        continue;
+      }
+      // parallel (e.g. a beam lying along a slab edge but longer than it): cut each at the other's ends
+      for (const [s, o] of [
+        [i, j],
+        [j, i],
+      ])
+        for (const q of segs[o]) {
+          const t = along(q, segs[s]);
+          if (t !== null) cuts[s].push(t);
+        }
+    }
+  const key = (q: Pt) => `${Math.round(q.x)}|${Math.round(q.y)}`;
+  const verts = new Map<string, Pt>();
+  const adj = new Map<string, Set<string>>();
+  const link = (a: Pt, b: Pt) => {
+    const ka = key(a),
+      kb = key(b);
+    if (ka === kb) return;
+    if (!verts.has(ka)) verts.set(ka, a);
+    if (!verts.has(kb)) verts.set(kb, b);
+    if (!adj.has(ka)) adj.set(ka, new Set());
+    if (!adj.has(kb)) adj.set(kb, new Set());
+    adj.get(ka)!.add(kb);
+    adj.get(kb)!.add(ka);
+  };
+  segs.forEach(([a, b], i) => {
+    const ts = [...new Set(cuts[i].map((t) => +t.toFixed(9)))].sort((x, y) => x - y);
+    for (let k = 0; k + 1 < ts.length; k++) {
+      const pa = { x: a.x + (b.x - a.x) * ts[k], y: a.y + (b.y - a.y) * ts[k] };
+      const pb = { x: a.x + (b.x - a.x) * ts[k + 1], y: a.y + (b.y - a.y) * ts[k + 1] };
+      link(pa, pb);
+    }
+  });
+  if (prune) {
+    const ends = [...adj.keys()].filter((k) => adj.get(k)!.size < 2);
+    while (ends.length) {
+      const k = ends.pop()!;
+      for (const n of adj.get(k) ?? []) {
+        const ns = adj.get(n)!;
+        ns.delete(k);
+        if (ns.size === 1) ends.push(n);
+      }
+      adj.delete(k);
+    }
+  }
+  // sorted outgoing edges (CCW)
+  const sorted = new Map<string, string[]>();
+  for (const [k, ns] of adj) {
+    const v = verts.get(k)!;
+    sorted.set(
+      k,
+      [...ns].sort((a, b) => {
+        const pa = verts.get(a)!,
+          pb = verts.get(b)!;
+        return Math.atan2(pa.y - v.y, pa.x - v.x) - Math.atan2(pb.y - v.y, pb.x - v.x);
+      }),
+    );
+  }
+  const used = new Set<string>();
+  const faces: Pt[][] = [];
+  for (const [u, ns] of adj)
+    for (const v of ns) {
+      if (used.has(u + '>' + v)) continue;
+      const face: string[] = [];
+      let a = u,
+        b = v,
+        guard = 0;
+      while (!used.has(a + '>' + b) && guard++ < 10000) {
+        used.add(a + '>' + b);
+        face.push(a);
+        const list = sorted.get(b)!;
+        const i = list.indexOf(a);
+        const c = list[(i - 1 + list.length) % list.length];
+        a = b;
+        b = c;
+      }
+      const pts = face.map((k) => verts.get(k)!);
+      if (polyArea(pts) > 1) faces.push(pts);
+    }
+  return faces;
+}
+
+/** Find the smallest closed region bounded by the given segments that contains `p`. */
+export function findBay(segs: [Pt, Pt][], p: Pt): Pt[] | null {
+  if (segs.length < 3) return null;
+  let best: Pt[] | null = null,
+    bestA = Infinity;
+  for (const pts of planarFaces(segs)) {
+    const A = polyArea(pts);
+    if (A < bestA && pointInPoly(p, pts)) {
+      best = pts;
+      bestA = A;
+    }
+  }
+  return best ? simplify(best) : null;
+}
+
+/** A point just inside a CCW face: a little to the left of the middle of its longest edge. */
+function innerPoint(pts: Pt[]): Pt {
+  let i0 = 0,
+    L = 0;
+  pts.forEach((a, i) => {
+    const l = dist(a, pts[(i + 1) % pts.length]);
+    if (l > L) (L = l), (i0 = i);
+  });
+  const a = pts[i0],
+    b = pts[(i0 + 1) % pts.length];
+  const d = Math.min(5, L / 4);
+  return { x: (a.x + b.x) / 2 - ((b.y - a.y) / L) * d, y: (a.y + b.y) / 2 + ((b.x - a.x) / L) * d };
+}
+
+/**
+ * Divide slabs into the panels their story's beams cut them into. Beams that stop short of a support are
+ * ignored; each piece keeps the slab's story and section. A slab no beam fully crosses is left as it is.
+ */
+export function splitSlabsByBeams(m: Model, slabIds: string[]): { model: Model; split: number; pieces: number } {
+  const ids = new Set(slabIds);
+  let split = 0,
+    pieces = 0;
+  const slabs: Slab[] = [];
+  for (const sl of m.slabs) {
+    if (!ids.has(sl.id)) {
+      slabs.push(sl);
+      continue;
+    }
+    const xs = sl.pts.map((p) => p.x),
+      ys = sl.pts.map((p) => p.y);
+    const x0 = Math.min(...xs) - TOL,
+      x1 = Math.max(...xs) + TOL,
+      y0 = Math.min(...ys) - TOL,
+      y1 = Math.max(...ys) + TOL;
+    const segs: [Pt, Pt][] = sl.pts.map((p, i) => [p, sl.pts[(i + 1) % sl.pts.length]]);
+    for (const b of m.beams)
+      if (b.story === sl.story && Math.max(b.x1, b.x2) >= x0 && Math.min(b.x1, b.x2) <= x1 && Math.max(b.y1, b.y2) >= y0 && Math.min(b.y1, b.y2) <= y1)
+        segs.push([
+          { x: b.x1, y: b.y1 },
+          { x: b.x2, y: b.y2 },
+        ]);
+    const parts = planarFaces(segs, true)
+      .filter((f) => pointInPoly(innerPoint(f), sl.pts))
+      .map(simplify)
+      .filter((f) => f.length >= 3);
+    // only accept pieces that tile the slab exactly
+    const area = Math.abs(polyArea(sl.pts));
+    const total = parts.reduce((s, f) => s + polyArea(f), 0);
+    if (parts.length < 2 || Math.abs(total - area) > Math.max(1, area * 1e-6)) {
+      slabs.push(sl);
+      continue;
+    }
+    split++;
+    pieces += parts.length;
+    for (const f of parts) slabs.push({ id: uid(), story: sl.story, pts: f, section: sl.section, ...(sl.loads ? { loads: sl.loads } : {}) });
+  }
+  return { model: split ? { ...m, slabs } : m, split, pieces };
+}
+
+/**
+ * Join selected slabs that share an edge (same story) into one slab each. A group is only merged when its
+ * outline is a single loop with no hole or overlap; it takes the section of its largest slab.
+ */
+export function mergeSlabs(m: Model, slabIds: string[]): { model: Model; merged: number; from: number; mixedLoads: number } {
+  const ids = new Set(slabIds);
+  const byStory = new Map<string, Slab[]>();
+  for (const sl of m.slabs) if (ids.has(sl.id)) byStory.set(sl.story, [...(byStory.get(sl.story) ?? []), sl]);
+  const gone = new Set<string>();
+  const added: Slab[] = [];
+  let mixedLoads = 0;
+  for (const group of byStory.values()) {
+    if (group.length < 2) continue;
+    // canonical vertices, so coincident corners within TOL share an index
+    const verts: Pt[] = [];
+    const vid = (p: Pt) => {
+      let i = verts.findIndex((v) => dist(v, p) < TOL);
+      if (i < 0) i = verts.push(p) - 1;
+      return i;
+    };
+    group.forEach((sl) => sl.pts.forEach(vid));
+    // directed edges, cut at any vertex lying on them so T-junctions line up
+    const edges: { a: number; b: number; owner: number }[] = [];
+    group.forEach((sl, k) => {
+      const pts = polyArea(sl.pts) < 0 ? [...sl.pts].reverse() : sl.pts;
+      pts.forEach((p, i) => {
+        const a = vid(p),
+          b = vid(pts[(i + 1) % pts.length]);
+        const d = sub(verts[b], verts[a]),
+          L = dist(verts[a], verts[b]);
+        if (L < TOL) return;
+        const on = verts
+          .map((v, j) => ({ j, t: ((v.x - verts[a].x) * d.x + (v.y - verts[a].y) * d.y) / (L * L), off: Math.abs(cross(d, sub(v, verts[a]))) / L }))
+          .filter((o) => o.j !== a && o.j !== b && o.off < TOL && o.t > 0 && o.t < 1)
+          .sort((p, q) => p.t - q.t)
+          .map((o) => o.j);
+        const chain = [a, ...on, b];
+        for (let c = 0; c + 1 < chain.length; c++) edges.push({ a: chain[c], b: chain[c + 1], owner: k });
+      });
+    });
+    // an edge walked both ways is interior: drop the pair and link the two slabs
+    const parent = group.map((_, i) => i);
+    const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+    const open = new Map<string, number>();
+    const dead = new Set<number>();
+    edges.forEach((e, i) => {
+      const twin = open.get(`${e.b}>${e.a}`);
+      if (twin !== undefined) {
+        open.delete(`${e.b}>${e.a}`);
+        dead.add(i).add(twin);
+        parent[find(e.owner)] = find(edges[twin].owner);
+      } else open.set(`${e.a}>${e.b}`, i);
+    });
+    const comps = new Map<number, number[]>();
+    group.forEach((_, i) => comps.set(find(i), [...(comps.get(find(i)) ?? []), i]));
+    for (const members of comps.values()) {
+      if (members.length < 2) continue;
+      const mine = new Set(members);
+      const next = new Map<number, number>();
+      let bad = false;
+      edges.forEach((e, i) => {
+        if (dead.has(i) || !mine.has(e.owner)) return;
+        if (next.has(e.a)) bad = true; // pinch point or overlap
+        next.set(e.a, e.b);
+      });
+      if (bad || !next.size) continue;
+      const start = next.keys().next().value as number;
+      const loop: Pt[] = [];
+      for (let v = start, n = 0; n <= next.size; n++) {
+        loop.push(verts[v]);
+        v = next.get(v)!;
+        if (v === start || v === undefined) break;
+      }
+      if (loop.length !== next.size) continue; // more than one loop: a hole or a gap
+      const area = members.reduce((s, i) => s + Math.abs(polyArea(group[i].pts)), 0);
+      if (Math.abs(polyArea(loop) - area) > Math.max(1, area * 1e-6)) continue;
+      const pts = simplify(loop);
+      const biggest = members.reduce((b, i) => (Math.abs(polyArea(group[i].pts)) > Math.abs(polyArea(group[b].pts)) ? i : b));
+      members.forEach((i) => gone.add(group[i].id));
+      // the merged slab keeps the loads only when every piece carried the same
+      const ml = mergedLoads(members.map((i) => group[i]), shellLoadKey);
+      if (ml.mixed) mixedLoads++;
+      added.push({ id: uid(), story: group[0].story, pts, section: group[biggest].section, ...(ml.loads ? { loads: ml.loads } : {}) });
+    }
+  }
+  if (!added.length) return { model: m, merged: 0, from: 0, mixedLoads: 0 };
+  return { model: { ...m, slabs: [...m.slabs.filter((s) => !gone.has(s.id)), ...added] }, merged: added.length, from: gone.size, mixedLoads };
+}
+
+/**
+ * Join selected beams that lie on one line and touch or overlap (same story) into one beam each, end to end.
+ * The joined beam takes the section of its longest piece.
+ */
+export function joinBeams(m: Model, beamIds: string[]): { model: Model; joined: number; from: number; ids: string[]; mixedLoads: number } {
+  const ids = new Set(beamIds);
+  const beams = m.beams.filter((b) => ids.has(b.id));
+  const ends = (b: Beam): [Pt, Pt] => [
+    { x: b.x1, y: b.y1 },
+    { x: b.x2, y: b.y2 },
+  ];
+  const len = (b: Beam) => dist(...ends(b));
+  const offLine = (p: Pt, [a, c]: [Pt, Pt]) => Math.abs(cross(sub(c, a), sub(p, a))) / (dist(a, c) || 1);
+  const collinear = (a: Beam, b: Beam) => ends(b).every((p) => offLine(p, ends(a)) < TOL) && ends(a).every((p) => offLine(p, ends(b)) < TOL);
+  const touch = (a: Beam, b: Beam) => [...ends(a).map((p) => distToSeg(p, ...ends(b))), ...ends(b).map((p) => distToSeg(p, ...ends(a)))].some((d) => d < TOL);
+  const parent = beams.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  for (let i = 0; i < beams.length; i++)
+    for (let j = i + 1; j < beams.length; j++)
+      if (beams[i].story === beams[j].story && len(beams[i]) >= TOL && len(beams[j]) >= TOL && collinear(beams[i], beams[j]) && touch(beams[i], beams[j])) parent[find(i)] = find(j);
+  const comps = new Map<number, Beam[]>();
+  beams.forEach((b, i) => comps.set(find(i), [...(comps.get(find(i)) ?? []), b]));
+  const gone = new Set<string>();
+  const added: Beam[] = [];
+  let mixedLoads = 0;
+  for (const group of comps.values()) {
+    if (group.length < 2) continue;
+    const longest = group.reduce((a, b) => (len(b) > len(a) ? b : a));
+    const [a, c] = ends(longest);
+    const d = sub(c, a);
+    const t = (p: Pt) => (p.x - a.x) * d.x + (p.y - a.y) * d.y;
+    const pts = group.flatMap(ends).sort((p, q) => t(p) - t(q));
+    const p1 = pts[0],
+      p2 = pts[pts.length - 1];
+    group.forEach((b) => gone.add(b.id));
+    const ml = fullLengthLoads(group);
+    if (ml.mixed) mixedLoads++;
+    added.push({ id: uid(), story: longest.story, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, section: longest.section, ...(ml.loads ? { loads: ml.loads } : {}) });
+  }
+  if (!added.length) return { model: m, joined: 0, from: 0, ids: [], mixedLoads: 0 };
+  return { model: { ...m, beams: [...m.beams.filter((b) => !gone.has(b.id)), ...added] }, joined: added.length, from: gone.size, ids: added.map((b) => b.id), mixedLoads };
+}
+
+/**
+ * Join selected columns stacked at one point on consecutive (or overlapping) stories into one column each, spanning
+ * from the bottom of the lowest piece to the top of the highest. It takes the section and angle of its lowest piece;
+ * `mixed` counts joined columns whose pieces had different sections.
+ */
+export function joinColumns(m: Model, colIds: string[]): { model: Model; joined: number; from: number; ids: string[]; mixed: number; mixedLoads: number } {
+  const ids = new Set(colIds);
+  const idx = new Map(m.stories.map((s, i) => [s.name, i]));
+  const lo = (c: Column) => idx.get(c.base ?? c.story)!,
+    hi = (c: Column) => idx.get(c.story)!;
+  const stacks: Column[][] = [];
+  for (const c of m.columns) {
+    if (!ids.has(c.id) || !idx.has(c.story) || !idx.has(c.base ?? c.story)) continue;
+    const s = stacks.find((s) => dist(s[0], c) < TOL);
+    if (s) s.push(c);
+    else stacks.push([c]);
+  }
+  const gone = new Set<string>();
+  const added: Column[] = [];
+  let mixed = 0,
+    mixedLoads = 0;
+  for (const stack of stacks) {
+    stack.sort((a, b) => lo(a) - lo(b));
+    let run: Column[] = [];
+    const flush = () => {
+      if (run.length > 1) {
+        const first = run[0];
+        const top = run.reduce((a, b) => (hi(b) > hi(a) ? b : a));
+        run.forEach((c) => gone.add(c.id));
+        const ml = fullLengthLoads(run);
+        if (ml.mixed) mixedLoads++;
+        added.push({ id: uid(), story: top.story, base: first.base ?? first.story, x: first.x, y: first.y, section: first.section, angle: first.angle, ...(ml.loads ? { loads: ml.loads } : {}) });
+        if (run.some((c) => c.section !== first.section)) mixed++;
+      }
+      run = [];
+    };
+    for (const c of stack) {
+      if (run.length && lo(c) > Math.max(...run.map(hi)) + 1) flush(); // a story between them is missing
+      run.push(c);
+    }
+    flush();
+  }
+  if (!added.length) return { model: m, joined: 0, from: 0, ids: [], mixed: 0, mixedLoads: 0 };
+  return { model: { ...m, columns: [...m.columns.filter((c) => !gone.has(c.id)), ...added] }, joined: added.length, from: gone.size, ids: added.map((c) => c.id), mixed, mixedLoads };
+}
+
+/**
+ * Loads for a member joined from pieces: kept only when every piece carries the same uniform, full-length loads
+ * (those mean the same on the longer member); otherwise dropped and `mixed` is set so the caller can warn.
+ */
+function fullLengthLoads(pieces: (Beam | Column)[]): { loads: FrameLoad[] | undefined; mixed: boolean } {
+  const ml = mergedLoads(pieces, frameLoadKey);
+  const uniform = (ml.loads ?? []).every((l) => l.kind === 'dist' && l.rel && l.d1 === 0 && l.d2 === 1 && l.v1 === l.v2);
+  return ml.mixed || !uniform ? { loads: undefined, mixed: true } : ml;
+}
+
+/** Ids of slabs that any of the given beams runs across or into (same story). */
+export function slabsUnderBeams(m: Model, beamIds: string[]): string[] {
+  const ids = new Set(beamIds);
+  const beams = m.beams.filter((b) => ids.has(b.id));
+  return m.slabs
+    .filter((sl) =>
+      beams.some((b) => {
+        if (b.story !== sl.story) return false;
+        const a = { x: b.x1, y: b.y1 },
+          c = { x: b.x2, y: b.y2 };
+        if (pointInPoly({ x: (a.x + c.x) / 2, y: (a.y + c.y) / 2 }, sl.pts)) return true;
+        return sl.pts.some((p, i) => {
+          const r = segIntersect(a, c, p, sl.pts[(i + 1) % sl.pts.length]);
+          return r !== null && r.t > 1e-6 && r.t < 1 - 1e-6;
+        });
+      }),
+    )
+    .map((sl) => sl.id);
+}
+
+/** Drop collinear vertices. */
+function simplify(pts: Pt[]): Pt[] {
+  const out: Pt[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[(i - 1 + pts.length) % pts.length],
+      b = pts[i],
+      c = pts[(i + 1) % pts.length];
+    if (Math.abs(cross(sub(b, a), sub(c, b))) > 1e-3 * dist(a, b) * dist(b, c)) out.push(b);
+  }
+  return out;
+}
+
+/**
+ * Panel spans of a bay: the sides of its smallest enclosing rectangle (exact for a rectangular bay,
+ * at any rotation). Lx is the short span, Ly the long one; Ly/Lx > 2 is a one-way slab.
+ */
+export interface PanelSize {
+  lx: number;
+  ly: number;
+  ratio: number;
+  oneWay: boolean;
+  c: Pt; // centre of the enclosing rectangle
+  dx: Pt; // unit vector along the Lx span
+  dy: Pt; // unit vector along the Ly span
+}
+
+export function panelSize(pts: Pt[]): PanelSize {
+  let best = { a: Infinity, w: 0, h: 0, ux: 1, uy: 0, um: 0, vm: 0 };
+  for (let i = 0; i < pts.length; i++) {
+    const e = sub(pts[(i + 1) % pts.length], pts[i]);
+    const len = Math.hypot(e.x, e.y);
+    if (len < 1e-9) continue;
+    const ux = e.x / len,
+      uy = e.y / len;
+    let u0 = Infinity,
+      u1 = -Infinity,
+      v0 = Infinity,
+      v1 = -Infinity;
+    for (const p of pts) {
+      const u = p.x * ux + p.y * uy,
+        v = -p.x * uy + p.y * ux;
+      (u0 = Math.min(u0, u)), (u1 = Math.max(u1, u)), (v0 = Math.min(v0, v)), (v1 = Math.max(v1, v));
+    }
+    const w = u1 - u0,
+      h = v1 - v0;
+    if (w * h < best.a - 1e-6) best = { a: w * h, w, h, ux, uy, um: (u0 + u1) / 2, vm: (v0 + v1) / 2 };
+  }
+  const { ux, uy, um, vm } = best;
+  const u = { x: ux, y: uy },
+    v = { x: -uy, y: ux };
+  const c = { x: um * ux - vm * uy, y: um * uy + vm * ux };
+  const lx = Math.min(best.w, best.h),
+    ly = Math.max(best.w, best.h);
+  const ratio = lx > 0 ? ly / lx : Infinity;
+  return { lx, ly, ratio, oneWay: ratio > 2, c, dx: best.w <= best.h ? u : v, dy: best.w <= best.h ? v : u };
+}
+
+export function gridSegs(m: Model): [Pt, Pt][] {
+  return m.grids.map((g) => [
+    { x: g.x1, y: g.y1 },
+    { x: g.x2, y: g.y2 },
+  ]);
+}
+
+// ---------- grid dimensions ----------
+
+export interface DimLine {
+  a: Pt; // start of the dimension line
+  b: Pt;
+  value: number; // c/c distance, mm
+  ticks: Pt[]; // tick positions along the line
+  vertical: boolean; // dimension measured along Y (text runs vertically)
+}
+
+/**
+ * Centre-to-centre dimension chains for orthogonal grids: X grids are dimensioned along a line
+ * above them, Y grids along a line to their left, placed beyond the bubbles. A second, outer
+ * line gives the overall distance when there are three or more grids.
+ */
+export function gridDimensions(grids: Grid[], bubbleD: number): DimLine[] {
+  const out: DimLine[] = [];
+  const uniq = (v: number[]) => [...new Set(v.map((x) => Math.round(x * 1000) / 1000))].sort((p, q) => p - q);
+  const xg = grids.filter((g) => g.dir === 'X'),
+    yg = grids.filter((g) => g.dir === 'Y');
+  const off1 = bubbleD * 1.6,
+    off2 = bubbleD * 2.4;
+
+  const chain = (pos: number[], at: (v: number, off: number) => Pt, vertical: boolean) => {
+    if (pos.length < 2) return;
+    for (let i = 0; i + 1 < pos.length; i++)
+      out.push({ a: at(pos[i], off1), b: at(pos[i + 1], off1), value: pos[i + 1] - pos[i], ticks: [at(pos[i], off1), at(pos[i + 1], off1)], vertical });
+    if (pos.length > 2) {
+      const a = at(pos[0], off2),
+        b = at(pos[pos.length - 1], off2);
+      out.push({ a, b, value: pos[pos.length - 1] - pos[0], ticks: [a, b], vertical });
+    }
+  };
+  if (xg.length) {
+    const top = Math.max(...xg.flatMap((g) => [g.y1, g.y2]));
+    chain(uniq(xg.map((g) => g.x1)), (x, off) => ({ x, y: top + off }), false);
+  }
+  if (yg.length) {
+    const left = Math.min(...yg.flatMap((g) => [g.x1, g.x2]));
+    chain(uniq(yg.map((g) => g.y1)), (y, off) => ({ x: left - off, y }), true);
+  }
+  return out;
+}
+
+// ---------- select by properties ----------
+
+export interface ElementFilter {
+  kinds: { column: boolean; beam: boolean; slab: boolean };
+  stories: string[] | null; // null = all stories
+  sections: string[] | null; // null = any section
+  shape: 'any' | 'Rectangle' | 'Circle' | 'Other'; // frame sections only
+  material: string; // '' = any
+  t3: [number | null, number | null]; // depth range (frame) / thickness range (slab), mm
+  t2: [number | null, number | null]; // width range, frame only
+  load?: string; // '' / absent = any; a pattern name = carries a load in it; '-' = carries no load at all
+}
+
+export const anyFilter = (): ElementFilter => ({
+  kinds: { column: true, beam: true, slab: true },
+  stories: null,
+  sections: null,
+  shape: 'any',
+  material: '',
+  t3: [null, null],
+  t2: [null, null],
+  load: '',
+});
+
+const inRange = (v: number | undefined, [lo, hi]: [number | null, number | null]) =>
+  (lo === null || (v !== undefined && v >= lo - 1e-6)) && (hi === null || (v !== undefined && v <= hi + 1e-6));
+
+/** Ids of columns/beams/slabs whose story and section properties match the filter. */
+export function matchElements(m: Model, f: ElementFilter): string[] {
+  const fs = new Map(m.frameSections.map((s) => [s.name, s]));
+  const ss = new Map(m.slabSections.map((s) => [s.name, s]));
+  const story = (s: string) => !f.stories || f.stories.includes(s);
+  const sect = (s: string) => !f.sections || f.sections.includes(s);
+  const frameOk = (name: string) => {
+    const s = fs.get(name);
+    if (f.shape !== 'any' && s?.shape !== f.shape) return false;
+    if (f.material && s?.material !== f.material) return false;
+    return inRange(s?.t3, f.t3) && inRange(s?.t2, f.t2);
+  };
+  const slabOk = (name: string) => {
+    const s = ss.get(name);
+    if (f.shape !== 'any' || f.t2[0] !== null || f.t2[1] !== null) return false; // frame-only criteria exclude slabs
+    if (f.material && s?.material !== f.material) return false;
+    return inRange(s?.thickness, f.t3);
+  };
+  const loadOk = (x: { loads?: { pattern: string }[] }) => !f.load || (f.load === '-' ? !x.loads?.length : !!x.loads?.some((l) => l.pattern === f.load));
+  const ids: string[] = [];
+  if (f.kinds.column) for (const c of m.columns) if (columnStories(m, c).some(story) && sect(c.section) && frameOk(c.section) && loadOk(c)) ids.push(c.id);
+  if (f.kinds.beam) for (const b of m.beams) if (story(b.story) && sect(b.section) && frameOk(b.section) && loadOk(b)) ids.push(b.id);
+  if (f.kinds.slab) for (const s of m.slabs) if (story(s.story) && sect(s.section) && slabOk(s.section) && loadOk(s)) ids.push(s.id);
+  return ids;
+}
+
+export { lineIntersect };

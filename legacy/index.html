@@ -1,0 +1,717 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RCC Stair Designer</title>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+<style>
+:root{--bg:#eef0f3;--panel:#fff;--ink:#1d2330;--muted:#535b69;--line:#d6dae1;--accent:#2563eb;
+--flight:#cddcfb;--flightS:#3b6fd8;--landing:#d8eed5;--landingS:#4c9a52;--beam:#9b7b63;--beamS:#5c4332;
+--span:#d9481c;--gridMin:#e6e9ee;--gridMaj:#c9ced8;--canvas:#fbfcfd;--ok:#15803d;--ng:#c62828}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15181d;--panel:#1d2128;--ink:#e6e9ef;--muted:#98a1b0;--line:#323844;--accent:#6c9cff;
+--flight:#24365c;--flightS:#7aa2f7;--landing:#23402a;--landingS:#7cc685;--beam:#6b5443;--beamS:#c9a88e;--span:#ff7a4d;--gridMin:#20252d;--gridMaj:#2e3540;--canvas:#171a20;--ok:#4ade80;--ng:#f87171}}
+:root[data-theme="dark"]{--bg:#15181d;--panel:#1d2128;--ink:#e6e9ef;--muted:#98a1b0;--line:#323844;--accent:#6c9cff;
+--flight:#24365c;--flightS:#7aa2f7;--landing:#23402a;--landingS:#7cc685;--beam:#6b5443;--beamS:#c9a88e;--span:#ff7a4d;--gridMin:#20252d;--gridMaj:#2e3540;--canvas:#171a20;--ok:#4ade80;--ng:#f87171}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.4 system-ui,Segoe UI,Roboto,sans-serif}
+header{height:46px;display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+header h1{font-size:15px;margin:0 12px 0 0;font-weight:650}
+button,select,input{font:inherit;color:inherit}
+button{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+select,input{background:var(--canvas);border:1px solid var(--line);border-radius:5px;padding:3px 6px}
+#app{display:grid;grid-template-columns:64px 1fr 320px;height:calc(100% - 46px)}
+#tools{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;gap:6px;padding:8px 6px}
+#tools button{padding:6px 2px;font-size:11px;line-height:1.2}
+#tools hr{border:0;border-top:1px solid var(--line);width:100%}
+main{display:flex;flex-direction:column;min-width:0}
+.tabs{display:flex;gap:4px;padding:6px 8px;border-bottom:1px solid var(--line);background:var(--panel)}
+.view{flex:1;position:relative;display:none;min-height:0}
+.view.show{display:block}
+canvas{display:block;width:100%;height:100%;background:var(--canvas)}
+#view3d>div.msg{padding:20px;color:var(--muted)}
+#lbl3d{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+#lbl3d div{position:absolute;transform:translate(-50%,-100%);background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:2px 6px;font-size:11px;line-height:1.35;white-space:nowrap;color:var(--ink)}
+#lbl3d .dl{color:var(--span);font-weight:600}#lbl3d .ll{color:var(--accent);font-weight:600}
+.hud{position:absolute;left:8px;bottom:6px;font-size:11px;color:var(--muted);background:var(--panel);padding:2px 6px;border-radius:4px;border:1px solid var(--line);pointer-events:none}
+.bar{z-index:2;position:absolute;bottom:8px;right:8px;display:flex;gap:6px;align-items:center;background:var(--panel);padding:4px 6px;border:1px solid var(--line);border-radius:6px}
+aside{background:var(--panel);border-left:1px solid var(--line);overflow:auto;padding:0 10px 20px}
+aside h2{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:14px 0 6px}
+.form{display:grid;grid-template-columns:1fr 92px;gap:4px 6px;align-items:center}
+.form label{font-size:12px}
+.form input,.form select{width:100%}
+.info{font-size:12px;color:var(--muted);margin-top:6px}
+#list div{padding:3px 6px;border-radius:4px;cursor:pointer;display:flex;justify-content:space-between}
+#list div:hover{background:var(--bg)}
+#list div.sel{background:var(--accent);color:#fff}
+.report{overflow:auto;padding:16px 22px;background:var(--canvas)}
+.report h2{font-size:17px;margin:18px 0 8px}
+.report h4{margin:14px 0 6px}
+.report table{border-collapse:collapse;margin:6px 0 10px;font-size:12px}
+.report th,.report td{border:1px solid var(--line);padding:3px 8px;text-align:right}
+.report th{background:var(--bg)}
+.report td:first-child,.report th:first-child{text-align:left}
+.card{border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin:10px 0;background:var(--panel)}
+.ok{color:var(--ok);font-weight:600}.ng{color:var(--ng);font-weight:600}
+.warn{color:var(--ng)}
+.calc{font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:pre-wrap;margin:4px 0}
+@media (max-width:900px){#app{grid-template-columns:52px 1fr}aside{grid-column:1/-1;max-height:45vh}}
+@media print{header,#tools,aside,.tabs{display:none!important}#app{display:block;height:auto}.view{display:none!important}#viewRes{display:block!important;overflow:visible}body,#viewRes,.card,.report th{background:#fff!important;color:#000!important}}
+</style>
+<script>try{const t=localStorage.getItem('stairTheme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body>
+<header>
+  <h1>RCC Stair Designer <span style="font-weight:400;color:var(--muted)">IS 456</span></h1>
+  <select id="tplSel">
+    <option value="">Template…</option>
+    <option value="straight">Straight flight</option>
+    <option value="L">L / quarter-turn</option>
+    <option value="dog">Dog-legged</option>
+    <option value="open">Open-well (C / U type)</option>
+  </select>
+  <button id="bNew">New</button>
+  <button id="bOpen">Open…</button><input type="file" id="fOpen" accept=".json" hidden>
+  <button id="bSave">Save</button>
+  <button id="bCsv">ETABS loads CSV</button>
+  <button id="bPrint">Print report</button>
+  <button id="bUndo" title="Ctrl+Z">Undo</button>
+  <select id="themeSel" title="Theme" style="margin-left:auto"><option value="">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+</header>
+<div id="app">
+  <nav id="tools">
+    <button data-tool="select" class="on" title="Select / move (V)">Select</button>
+    <button data-tool="pan" title="Pan (right-drag also pans)">Pan</button>
+    <hr>
+    <button data-tool="grid" title="1. Drag a vertical or horizontal line; set c/c in the panel">1 Grid</button>
+    <button data-tool="column" title="2. Click a grid intersection, or drag a box to fill all intersections">2 Column</button>
+    <button data-tool="beam" title="3. Drag column to column; set type (primary / secondary / landing / side) in the panel">3 Beam</button>
+    <button data-tool="flight" title="4. Drag along the going, in the UP direction">4 Flight</button>
+    <button data-tool="landing" title="Drag a rectangle">Landing</button>
+    <button data-tool="span" title="Drag from support to support">Span</button>
+    <hr>
+    <button id="bAuto" title="Create one span per flight, through adjacent landings to beams">Auto spans</button>
+    <button id="bDel" title="Delete selected (Del)">Delete</button>
+    <button id="bFit" title="Fit view">Fit</button>
+  </nav>
+  <main>
+    <div class="tabs">
+      <button data-tab="Plan" class="on">Plan</button>
+      <button data-tab="Elev">Elevation</button>
+      <button data-tab="3d">3D</button>
+      <button data-tab="Res">Results</button>
+    </div>
+    <div id="viewPlan" class="view show"><canvas id="cPlan"></canvas><div class="hud" id="hud"></div></div>
+    <div id="viewElev" class="view"><canvas id="cElev"></canvas>
+      <div class="bar">View <select id="elevDir"><option value="x">Front (X–Z, looking +Y)</option><option value="y">Side (Y–Z, looking +X)</option></select></div></div>
+    <div id="view3d" class="view"><div id="lbl3d"></div><div class="bar"><label><input type="checkbox" id="wf" checked> Wireframe</label><label><input type="checkbox" id="showLoads" checked> ETABS loads</label><span style="color:var(--span)">■ Stair Dead</span><span style="color:var(--accent)">■ Stair Live</span></div></div>
+    <div id="viewRes" class="view report"></div>
+  </main>
+  <aside>
+    <h2>Selected</h2><div id="props"><div class="info">Nothing selected.</div></div>
+    <h2>Elements</h2><div id="list"></div>
+    <h2>Design parameters</h2><div id="params" class="form"></div>
+  </aside>
+</div>
+<script>
+'use strict';
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const P0={fck:25,fy:500,cover:20,bar:12,dbar:8,ff:1.5,ll:4,gc:25,gf:1.5,T:300,R:150,width:1.2,t:200,tl:200,snap:0.05};
+let S={p:{...P0},items:[],nid:1};
+let sel=null,msel=new Set(),tool='select',tab='Plan',drag=null;
+// multi-selection (box / shift-click) is msel; it only counts while it contains sel, so any code that sets sel to something else drops it
+const selSet=()=>msel.has(sel)?msel:new Set(sel?[sel]:[]),isSel=id=>selSet().has(id);
+const hist=[];
+
+// ---------- model helpers ----------
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const r4=v=>Math.round(v*1e4)/1e4;
+const snap=v=>r4(Math.round(v/S.p.snap)*S.p.snap);
+// structural grids are items {type:'grid', axis:'x'|'y', v, name}; axis x = vertical line at X = v
+const grids=axis=>S.items.filter(i=>i.type==='grid'&&i.axis===axis).map(i=>({n:i.name,v:i.v,id:i.id})).sort((a,b)=>a.v-b.v);
+function nextGridName(axis){const N=grids(axis).map(g=>g.n);
+  if(axis==='x')return String(Math.max(0,...N.map(n=>parseInt(n)||0))+1);
+  const L='ABCDEFGHJKLMNPQRSTUVWXYZ';return L[(Math.max(-1,...N.map(n=>L.indexOf(n)))+1)%L.length]; // I and O skipped, as on drawings
+}
+// older files stored grids as text "1:0, 2:3.6"
+function migrateGrids(o){for(const a of['x','y'])if(o['g'+a]){
+  String(o['g'+a]).split(/[,;]+/).map(t=>t.trim()).filter(Boolean).forEach((t,i)=>{const m=t.split(/[:=@]/),v=+(m.length>1?m[1]:m[0]);
+    if(Number.isFinite(v))o.items.push({type:'grid',axis:a,v,name:m.length>1?m[0].trim():(a==='x'?String(i+1):'ABCDEFGH'[i]||'Z'),id:o.nid++});});delete o['g'+a];}
+  return o;}
+// grid snap within 8 px, else normal snap step
+const gsnap=(v,axis)=>{const g=grids(axis).find(g=>Math.abs(g.v-v)*vp.s<8);return g?g.v:snap(v);};
+const gsnapP=w=>[gsnap(w[0],'x'),gsnap(w[1],'y')];
+// "on grid 2 (A–B)" style location for a beam
+function gridRef(b){const on=(ax,v)=>grids(ax).find(g=>Math.abs(g.v-v)<0.01),
+  btw=(ax,a,c)=>{const G=grids(ax);if(!G.length)return'';
+    const lab=v=>{const g=G.reduce((p,g)=>Math.abs(g.v-v)<Math.abs(p.v-v)?g:p),o=v-g.v;return Math.abs(o)<0.01?g.n:`${g.n}${o>0?'+':'−'}${Math.abs(o).toFixed(2)}`;};
+    return `${lab(Math.min(a,c))} – ${lab(Math.max(a,c))}`;};
+  if(Math.abs(b.x1-b.x2)<1e-6){const g=on('x',b.x1);return g?`grid ${g.n} (${btw('y',b.y1,b.y2)})`:'';}
+  if(Math.abs(b.y1-b.y2)<1e-6){const g=on('y',b.y1);return g?`grid ${g.n} (${btw('x',b.x1,b.x2)})`:'';}
+  return '';}
+const byId=id=>S.items.find(i=>i.id===id);
+const ofType=t=>S.items.filter(i=>i.type===t);
+const PFX={flight:'F',landing:'L',beam:'B',span:'S',column:'C'};
+// columns at every grid intersection inside the box that has none yet
+function colsAt(x0,y0,x1,y1){const out=[];
+  for(const gx of grids('x'))for(const gy of grids('y'))
+    if(gx.v>=x0-1e-6&&gx.v<=x1+1e-6&&gy.v>=y0-1e-6&&gy.v<=y1+1e-6&&!ofType('column').some(c=>Math.abs(c.x-gx.v)<1e-6&&Math.abs(c.y-gy.v)<1e-6))
+      out.push(add({type:'column',x:gx.v,y:gy.v,b:300,D:300}));
+  return out;}
+// beam top profile [[s,z],...] along its length; a side beam follows the adjacent flight (flat – inclined – flat)
+function sideFlight(b){const L=Math.hypot(b.x2-b.x1,b.y2-b.y1)||1,u=[(b.x2-b.x1)/L,(b.y2-b.y1)/L];
+  for(const f of ofType('flight')){const F=frame(f);if(Math.abs(F.u[0]*u[0]+F.u[1]*u[1])<0.99)continue;
+    const cx=(F.r.x0+F.r.x1)/2,cy=(F.r.y0+F.r.y1)/2,off=Math.abs((cx-b.x1)*u[1]-(cy-b.y1)*u[0]);
+    if(off-F.w/2>b.b/2000+0.3)continue;
+    const pr=(x,y)=>(x-b.x1)*u[0]+(y-b.y1)*u[1],sa=pr(...F.O),sb=pr(F.O[0]+F.u[0]*F.L,F.O[1]+F.u[1]*F.L);
+    if(Math.max(sa,sb)<0||Math.min(sa,sb)>L)continue;
+    return[[sa,f.z0],[sb,r4(f.z0+F.H)]].sort((p,q)=>p[0]-q[0]);}
+  return null;}
+const interp=(pts,s)=>{if(s<=pts[0][0])return pts[0][1];for(let i=1;i<pts.length;i++)if(s<=pts[i][0]){const[a,b]=[pts[i-1],pts[i]];return a[1]+(b[1]-a[1])*(s-a[0])/((b[0]-a[0])||1);}return pts[pts.length-1][1];};
+function beamTop(b){const L=Math.hypot(b.x2-b.x1,b.y2-b.y1),raw=b.kind==='side'&&sideFlight(b);
+  if(!raw)return[[0,b.z],[L,b.z]];
+  return[[0,interp(raw,0)],...raw.filter(p=>p[0]>0&&p[0]<L),[L,interp(raw,L)]];}
+const beamZ=(b,s)=>interp(beamTop(b),s);
+const zTxt=b=>{const t=beamTop(b);return t.length>2?`${f2(t[0][1],3)} → ${f2(t[t.length-1][1],3)}`:f2(b.z,3);};
+function add(o){
+  o.id=S.nid++;
+  if(!o.name){const k=ofType(o.type).map(i=>+String(i.name).slice(1)||0);o.name=PFX[o.type]+(Math.max(0,...k)+1);}
+  S.items.push(o);return o;
+}
+function commit(){hist.push(JSON.stringify(S));if(hist.length>80)hist.shift();}
+function undo(){if(!hist.length)return;S=JSON.parse(hist.pop());sel=null;refresh(true);}
+
+// flight local frame: rect = O + s*u + q*v, s in [0,L] (going, uphill), q in [0,w]
+function frame(f){
+  const L=(f.n-1)*f.T/1000,w=f.width,ax=f.dir[1]==='x',neg=f.dir[0]==='-';
+  const r=ax?{x0:f.x,y0:f.y,x1:f.x+L,y1:f.y+w}:{x0:f.x,y0:f.y,x1:f.x+w,y1:f.y+L};
+  return{L,w,r,u:ax?[neg?-1:1,0]:[0,neg?-1:1],v:ax?[0,1]:[1,0],
+    O:ax?[neg?r.x1:r.x0,r.y0]:[r.x0,neg?r.y1:r.y0],H:f.n*f.R/1000};
+}
+const rectOf=it=>it.type==='flight'?frame(it).r:it.type==='column'?{x0:it.x-it.b/2000,y0:it.y-it.D/2000,x1:it.x+it.b/2000,y1:it.y+it.D/2000}:{x0:it.x,y0:it.y,x1:it.x+it.w,y1:it.y+it.h};
+function flightLevel(f,x,y){const F=frame(f);const s=(x-F.O[0])*F.u[0]+(y-F.O[1])*F.u[1];return f.z0+clamp(s/F.L,0,1)*F.H;}
+function distSeg(px,py,ax,ay,bx,by){const dx=bx-ax,dy=by-ay,l2=dx*dx+dy*dy;const t=l2?clamp(((px-ax)*dx+(py-ay)*dy)/l2,0,1):0;return Math.hypot(px-ax-t*dx,py-ay-t*dy);}
+// Liang-Barsky clip of segment a->b against rect; returns [t0,t1] or null
+function clip(ax,ay,bx,by,r){
+  let t0=0,t1=1;const dx=bx-ax,dy=by-ay;
+  for(const[p,q]of[[-dx,ax-r.x0],[dx,r.x1-ax],[-dy,ay-r.y0],[dy,r.y1-ay]]){
+    if(Math.abs(p)<1e-12){if(q<-1e-9)return null;continue;}
+    const t=q/p;if(p<0){if(t>t1)return null;if(t>t0)t0=t;}else{if(t<t0)return null;if(t<t1)t1=t;}
+  }
+  return t1-t0>1e-6?[t0,t1]:null;
+}
+function levelGuess(x,y,tol){
+  for(const l of ofType('landing')){const r=rectOf(l);if(x>=r.x0-tol&&x<=r.x1+tol&&y>=r.y0-tol&&y<=r.y1+tol)return l.z;}
+  for(const f of ofType('flight')){const F=frame(f);
+    for(const[s,z]of[[F.L,f.z0+F.H],[0,f.z0]]){const ex=F.O[0]+F.u[0]*s,ey=F.O[1]+F.u[1]*s;
+      if(distSeg(x,y,ex,ey,ex+F.v[0]*F.w,ey+F.v[1]*F.w)<=tol)return r4(z);}}
+  return null;
+}
+
+// ---------- loads & analysis ----------
+// kN/m2 on plan area
+function slabLoads(it){
+  const p=S.p;
+  if(it.type==='flight'){const sec=Math.hypot(it.R,it.T)/it.T,ws=p.gc*it.t/1000*sec,st=p.gc*it.R/2000;return{ws,st,ff:p.ff,dl:ws+st+p.ff,ll:p.ll};}
+  const ws=p.gc*it.t/1000;return{ws,st:0,ff:p.ff,dl:ws+p.ff,ll:p.ll};
+}
+const spanU=sp=>{const L=Math.hypot(sp.x2-sp.x1,sp.y2-sp.y1);return[(sp.x2-sp.x1)/L,(sp.y2-sp.y1)/L];};
+const crosses=(sp,it)=>clip(sp.x1,sp.y1,sp.x2,sp.y2,rectOf(it));
+// simply supported, piecewise UDL segs {a,b,w}
+function ssBeam(segs,L){
+  let W=0,Mo=0;for(const s of segs){const F=s.w*(s.b-s.a);W+=F;Mo+=F*(s.a+s.b)/2;}
+  const RB=Mo/L,RA=W-RB;let M=0,xm=0;
+  for(let i=0;i<=500;i++){const x=L*i/500;let m=RA*x;
+    for(const s of segs){const e=Math.min(x,s.b);if(e>s.a)m-=s.w*(e-s.a)*(x-(s.a+e)/2);}
+    if(m>M){M=m;xm=x;}}
+  return{RA,RB,W,M,x:xm};
+}
+function findSupport(sp,end,segs,L,u){
+  const P=end?[sp.x2,sp.y2]:[sp.x1,sp.y1];let zs=null;
+  if(segs.length){const g=end?segs.reduce((a,b)=>b.b>a.b?b:a):segs[0];const d=end?g.b:g.a;
+    zs=g.it.type==='landing'?g.it.z:flightLevel(g.it,sp.x1+u[0]*d,sp.y1+u[1]*d);}
+  let best=null,bs=1e9,s=0,bl=0;
+  for(const b of ofType('beam')){
+    const dd=distSeg(P[0],P[1],b.x1,b.y1,b.x2,b.y2);if(dd>b.b/2000+0.1)continue;
+    const l=Math.hypot(b.x2-b.x1,b.y2-b.y1),q=((P[0]-b.x1)*(b.x2-b.x1)+(P[1]-b.y1)*(b.y2-b.y1))/l;
+    const sc=(zs==null?0:Math.abs(beamZ(b,q)-zs))*10+dd;if(sc<bs){bs=sc;best=b;s=q;bl=l;}
+  }
+  if(!best)return{beam:null,zs};
+  return{beam:best,zs,s,bl,bz:beamZ(best,s),mismatch:zs!=null&&Math.abs(beamZ(best,s)-zs)>0.3};
+}
+function analyze(sp){
+  const L=Math.hypot(sp.x2-sp.x1,sp.y2-sp.y1);if(L<0.1)return null;
+  const u=spanU(sp),segs=[];
+  for(const it of S.items){
+    if(it.type!=='flight'&&it.type!=='landing')continue;
+    const c=crosses(sp,it);if(!c)continue;
+    // IS 456 cl 33.2: area common to two spans at right angles carries half load in each direction
+    let k=1;
+    if(it.type==='landing'&&ofType('span').some(o=>{if(o===sp)return false;const v=spanU(o);return Math.abs(u[0]*v[0]+u[1]*v[1])<0.5&&crosses(o,it);}))k=0.5;
+    const ld=slabLoads(it);segs.push({it,a:c[0]*L,b:c[1]*L,k,ld,dl:ld.dl*k,ll:ld.ll*k});
+  }
+  segs.sort((a,b)=>a.a-b.a);
+  const run=f=>ssBeam(segs.map(s=>({a:s.a,b:s.b,w:f(s)})),L);
+  const D=run(s=>s.dl),LL=run(s=>s.ll),U=run(s=>S.p.gf*(s.dl+s.ll));
+  const fl=segs.filter(s=>s.it.type==='flight');
+  const t=fl.length?Math.min(...fl.map(s=>s.it.t)):segs.length?Math.min(...segs.map(s=>s.it.t)):150;
+  return{L,u,segs,D,LL,U,t,sup:[0,1].map(e=>findSupport(sp,e,segs,L,u)),des:design(U,t,L)};
+}
+
+// ---------- IS 456 design ----------
+const TC_PT=[0.15,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3];
+const TC={15:[.28,.35,.46,.54,.60,.64,.68,.71,.71,.71,.71,.71,.71],20:[.28,.36,.48,.56,.62,.67,.72,.75,.79,.81,.82,.82,.82],
+25:[.29,.36,.49,.57,.64,.70,.74,.78,.82,.85,.88,.90,.92],30:[.29,.37,.50,.59,.66,.71,.76,.80,.84,.88,.91,.94,.96],
+35:[.29,.37,.50,.59,.67,.73,.78,.82,.86,.90,.93,.96,.99],40:[.30,.38,.51,.60,.68,.74,.79,.84,.88,.92,.95,.98,1.01]};
+const TCMAX={15:2.5,20:2.8,25:3.1,30:3.5,35:3.7,40:4.0};
+const grade=fck=>[15,20,25,30,35,40].filter(g=>g<=fck).pop()||15;
+function tauC(pt,fck){const row=TC[grade(fck)],p=clamp(pt,.15,3);let i=0;while(i<TC_PT.length-2&&p>TC_PT[i+1])i++;
+  return row[i]+(row[i+1]-row[i])*(p-TC_PT[i])/(TC_PT[i+1]-TC_PT[i]);}
+const kSlab=D=>clamp(1.3-(D-150)/150*0.3,1,1.3); // cl 40.2.1.1
+function design(U,D,L){
+  const p=S.p,b=1000,d=D-p.cover-p.bar/2,Mu=U.M*1e6,Vu=Math.max(U.RA,U.RB)*1e3;
+  const xr=0.0035/(0.0055+0.87*p.fy/2e5),Q=0.36*p.fck*xr*(1-0.42*xr),Mlim=Q*b*d*d;
+  const disc=1-4.6*Mu/(p.fck*b*d*d);
+  const Ast=disc>0?0.5*p.fck/p.fy*(1-Math.sqrt(disc))*b*d:NaN;
+  const Amin=(p.fy>250?0.0012:0.0015)*b*D,Areq=Math.max(Ast,Amin);
+  const ab=Math.PI*p.bar**2/4,sMax=Math.min(3*d,300);
+  const s=Math.max(50,Math.floor(Math.min(1000*ab/Areq,sMax)/10)*10),Aprov=1000*ab/s;
+  const abd=Math.PI*p.dbar**2/4,sdMax=Math.min(5*d,450),sd=Math.floor(Math.min(1000*abd/Amin,sdMax)/10)*10,Adprov=1000*abd/sd;
+  const pt=100*Aprov/(b*d),tc=tauC(pt,p.fck),k=kSlab(D),tv=Vu/(b*d),tcmax=TCMAX[grade(p.fck)];
+  const fs=0.58*p.fy*Areq/Aprov,kt=Math.min(2,1/(0.225+0.00322*fs+0.625*Math.log10(pt)));
+  const ld=L*1000/d,ldAllow=20*kt;
+  return{b,D,d,Mu:U.M,Vu:Vu/1e3,xr,Q,Mlim:Mlim/1e6,flex:Mu<=Mlim&&disc>0,dReq:Math.sqrt(Mu/(Q*b)),Ast,Amin,Areq,s,sMax,Aprov,
+    sd,sdMax,Adprov,pt,tc,k,tv,tcmax,shear:tv<=k*tc,shearMax:tv<=0.5*tcmax,fs,kt,ld,ldAllow,defl:ld<=ldAllow};
+}
+
+// ---------- beam loads (unfactored, for ETABS load patterns) ----------
+function beamLoads(){
+  const out=new Map(ofType('beam').map(b=>[b,[]])),warn=[];
+  for(const sp of ofType('span')){const A=analyze(sp);if(!A)continue;
+    A.sup.forEach((s,e)=>{const R=e?'RB':'RA';
+      if(!s.beam){warn.push(`${sp.name}: ${e?'end':'start'} has no beam — reaction ${A.D[R].toFixed(2)} (DL) + ${A.LL[R].toFixed(2)} (LL) kN/m not assigned to any beam (wall?)`);return;}
+      if(s.mismatch)warn.push(`${sp.name}: ${e?'end':'start'} slab level ${s.zs.toFixed(3)} vs beam ${s.beam.name} level ${s.bz.toFixed(3)} — check`);
+      const a=clamp(s.s-sp.width/2,0,s.bl),b=clamp(s.s+sp.width/2,0,s.bl);
+      out.get(s.beam).push({sp,a,b,dl:A.D[R],ll:A.LL[R],fu:A.U[R]});});
+  }
+  for(const f of ofType('flight'))if(!ofType('span').some(sp=>crosses(sp,f)))warn.push(`${f.name}: not covered by any span — its load is not reaching any beam`);
+  return{out,warn};
+}
+
+// ---------- templates ----------
+function template(kind){
+  commit();const p=S.p,T=p.T/1000,R=p.R/1000,w=p.width,g=0.15,ld=Math.max(1.2,w);
+  S.items=[];S.nid=1;sel=null;
+  const F=o=>add({type:'flight',T:p.T,R:p.R,t:p.t,width:w,...o}),
+    Ld=o=>add({type:'landing',t:p.tl,...o}),B=o=>add({type:'beam',b:230,D:450,...o}),Lg=n=>r4((n-1)*T);
+  if(kind==='straight'){const n=20,L=Lg(n);F({x:0,y:0,dir:'+x',n,z0:0});B({x1:0,y1:0,x2:0,y2:w,z:0});B({x1:L,y1:0,x2:L,y2:w,z:r4(n*R)});}
+  if(kind==='dog'){const n=10,L=Lg(n),W=r4(2*w+g);
+    F({x:0,y:0,dir:'+x',n,z0:0});Ld({x:L,y:0,w:ld,h:W,z:r4(n*R)});F({x:0,y:r4(w+g),dir:'-x',n,z0:r4(n*R)});
+    B({x1:0,y1:0,x2:0,y2:w,z:0});B({x1:0,y1:r4(w+g),x2:0,y2:W,z:r4(2*n*R)});B({x1:r4(L+ld),y1:0,x2:r4(L+ld),y2:W,z:r4(n*R)});}
+  if(kind==='L'){const n=10,L=Lg(n);
+    F({x:0,y:0,dir:'+x',n,z0:0});Ld({x:L,y:0,w,h:w,z:r4(n*R)});F({x:L,y:w,dir:'+y',n,z0:r4(n*R)});
+    B({x1:0,y1:0,x2:0,y2:w,z:0});B({x1:r4(L+w),y1:0,x2:r4(L+w),y2:w,z:r4(n*R)});B({x1:L,y1:0,x2:r4(L+w),y2:0,z:r4(n*R)});
+    B({x1:L,y1:r4(w+L),x2:r4(L+w),y2:r4(w+L),z:r4(2*n*R)});}
+  if(kind==='open'){const n1=8,n2=4,L1=Lg(n1),L2=Lg(n2),z1=r4(n1*R),z2=r4((n1+n2)*R),Y=r4(2*w+L2),X=r4(L1+w);
+    F({x:0,y:0,dir:'+x',n:n1,z0:0});Ld({x:L1,y:0,w,h:w,z:z1});F({x:L1,y:w,dir:'+y',n:n2,z0:z1});
+    Ld({x:L1,y:r4(w+L2),w,h:w,z:z2});F({x:0,y:r4(w+L2),dir:'-x',n:n1,z0:z2});
+    B({x1:0,y1:0,x2:0,y2:w,z:0});B({x1:0,y1:r4(w+L2),x2:0,y2:Y,z:r4((2*n1+n2)*R)});
+    B({x1:X,y1:0,x2:X,y2:w,z:z1});B({x1:X,y1:r4(w+L2),x2:X,y2:Y,z:z2});
+    B({x1:L1,y1:0,x2:X,y2:0,z:z1});B({x1:L1,y1:Y,x2:X,y2:Y,z:z2});}
+  // templates put grids on the outer beam / slab lines
+  {const bx=ofType('beam').flatMap(b=>[b.x1,b.x2]),by=S.items.flatMap(i=>i.type==='beam'?[i.y1,i.y2]:i.type==='flight'||i.type==='landing'?[rectOf(i).y0,rectOf(i).y1]:[]);
+    const G=(axis,v,name)=>add({type:'grid',axis,v:r4(v),name});G('x',Math.min(...bx),'1');G('x',Math.max(...bx),'2');G('y',Math.min(...by),'A');G('y',Math.max(...by),'B');
+    colsAt(-1e9,-1e9,1e9,1e9);}
+  autoSpans(true);fitPlan();refresh(true);
+}
+
+// one span per flight: through contiguous landings, ends on the beam whose level matches
+function autoSpans(noCommit){
+  if(!noCommit)commit();
+  S.items=S.items.filter(i=>!(i.type==='span'&&i.auto));
+  const cross=(a,b)=>a[0]*b[1]-a[1]*b[0];
+  for(const f of ofType('flight')){
+    const F=frame(f),u=F.u,c=[F.O[0]+u[0]*F.L/2+F.v[0]*F.w/2,F.O[1]+u[1]*F.L/2+F.v[1]*F.w/2],pt=t=>[c[0]+u[0]*t,c[1]+u[1]*t];
+    const end=sg=>{let t=sg*F.L/2,z=sg>0?f.z0+F.H:f.z0;
+      for(let k=0;k<6;k++){const q=pt(t+sg*0.02);
+        const l=ofType('landing').find(l=>{const r=rectOf(l);return q[0]>r.x0&&q[0]<r.x1&&q[1]>r.y0&&q[1]<r.y1;});
+        if(!l)break;const r=rectOf(l),far=pt(t+sg*100),cc=clip(q[0],q[1],far[0],far[1],r);
+        t=t+sg*(0.02+cc[1]*100);z=l.z;}
+      let best=null,bs=1e9;
+      for(const b of ofType('beam')){const d=[b.x2-b.x1,b.y2-b.y1],den=cross(u,d);if(Math.abs(den)<1e-9)continue;
+        const ac=[b.x1-c[0],b.y1-c[1]],tb=cross(ac,d)/den,s=cross(ac,u)/den,tol=b.b/2000/Math.hypot(...d);
+        if(s<-tol||s>1+tol||sg*(tb-sg*F.L/2)<-0.3||sg*(tb-t)>0.4)continue;
+        const sc=Math.abs(beamZ(b,clamp(s,0,1)*Math.hypot(...d))-z)*10+Math.abs(tb-t);if(sc<bs){bs=sc;best=tb;}}
+      return best??t;};
+    const a=pt(end(-1)),b=pt(end(1));
+    add({type:'span',auto:true,x1:r4(a[0]),y1:r4(a[1]),x2:r4(b[0]),y2:r4(b[1]),width:F.w});
+  }
+}
+
+// ---------- plan canvas ----------
+const cP=$('#cPlan'),vp={s:90,ox:80,oy:500};
+let C={};
+const readColors=()=>{const cs=getComputedStyle(document.documentElement);for(const k of['ink','muted','accent','flight','flightS','landing','landingS','beam','beamS','span','gridMin','gridMaj','canvas'])C[k]=cs.getPropertyValue('--'+k).trim();};
+function sizeCanvas(cv){const d=devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight;if(cv.width!==w*d||cv.height!==h*d){cv.width=w*d;cv.height=h*d;}
+  const g=cv.getContext('2d');g.setTransform(d,0,0,d,0,0);return[g,w,h];}
+const toS=(x,y)=>[vp.ox+x*vp.s,vp.oy-y*vp.s],toW=(sx,sy)=>[(sx-vp.ox)/vp.s,(vp.oy-sy)/vp.s];
+function bounds(){let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;const ext=(x,y)=>{x0=Math.min(x0,x);y0=Math.min(y0,y);x1=Math.max(x1,x);y1=Math.max(y1,y);};
+  for(const it of S.items){if(it.type==='flight'||it.type==='landing'||it.type==='column'){const r=rectOf(it);ext(r.x0,r.y0);ext(r.x1,r.y1);}else if(it.type!=='grid'){ext(it.x1,it.y1);ext(it.x2,it.y2);}}
+  if(x0<=x1){for(const g of grids('x')){x0=Math.min(x0,g.v);x1=Math.max(x1,g.v);}for(const g of grids('y')){y0=Math.min(y0,g.v);y1=Math.max(y1,g.v);}}
+  return x0>x1?{x0:0,y0:0,x1:6,y1:4}:{x0,y0,x1,y1};}
+function fitPlan(){const b=bounds(),w=cP.clientWidth||800,h=cP.clientHeight||500;vp.s=Math.min((w-120)/(b.x1-b.x0||1),(h-120)/(b.y1-b.y0||1),400);
+  vp.ox=w/2-(b.x0+b.x1)/2*vp.s;vp.oy=h/2+(b.y0+b.y1)/2*vp.s;}
+function poly(g,pts,fill,stroke,lw=1){g.beginPath();pts.forEach((p,i)=>{const[s,t]=toS(...p);i?g.lineTo(s,t):g.moveTo(s,t);});g.closePath();if(fill){g.fillStyle=fill;g.fill();}if(stroke){g.strokeStyle=stroke;g.lineWidth=lw;g.stroke();}}
+function line(g,a,b,col,lw=1,dash){const[x1,y1]=toS(...a),[x2,y2]=toS(...b);g.beginPath();g.setLineDash(dash||[]);g.moveTo(x1,y1);g.lineTo(x2,y2);g.strokeStyle=col;g.lineWidth=lw;g.stroke();g.setLineDash([]);}
+function text(g,s,p,col,size=11,align='center'){const[x,y]=toS(...p);g.font=`${size}px system-ui,sans-serif`;g.fillStyle=col;g.textAlign=align;g.textBaseline='middle';g.fillText(s,x,y);}
+function arrow(g,a,b,col){line(g,a,b,col,1.5);const[x1,y1]=toS(...a),[x2,y2]=toS(...b),an=Math.atan2(y2-y1,x2-x1);
+  g.beginPath();g.moveTo(x2,y2);g.lineTo(x2-9*Math.cos(an-.4),y2-9*Math.sin(an-.4));g.lineTo(x2-9*Math.cos(an+.4),y2-9*Math.sin(an+.4));g.closePath();g.fillStyle=col;g.fill();}
+const rectPts=r=>[[r.x0,r.y0],[r.x1,r.y0],[r.x1,r.y1],[r.x0,r.y1]];
+const beamPts=b=>{const L=Math.hypot(b.x2-b.x1,b.y2-b.y1)||1,h=b.b/2000,nx=-(b.y2-b.y1)/L*h,ny=(b.x2-b.x1)/L*h;return[[b.x1+nx,b.y1+ny],[b.x2+nx,b.y2+ny],[b.x2-nx,b.y2-ny],[b.x1-nx,b.y1-ny]];};
+
+function drawPlan(){
+  const[g,W,H]=sizeCanvas(cP);g.fillStyle=C.canvas;g.fillRect(0,0,W,H);
+  gridLines(g,W,H,grids('x'),x=>toS(x,0)[0],grids('y'),y=>toS(0,y)[1]);
+  const selC=it=>isSel(it.id)?C.accent:null;
+  for(const l of ofType('landing')){const r=rectOf(l);poly(g,rectPts(r),C.landing,selC(l)||C.landingS,selC(l)?2.5:1.2);
+    text(g,`${l.name}  +${l.z.toFixed(3)}`,[(r.x0+r.x1)/2,(r.y0+r.y1)/2],C.ink);}
+  for(const f of ofType('flight')){const F=frame(f);poly(g,rectPts(F.r),C.flight,selC(f)||C.flightS,selC(f)?2.5:1.2);
+    for(let i=1;i<f.n-1;i++){const s=i*f.T/1000;line(g,[F.O[0]+F.u[0]*s,F.O[1]+F.u[1]*s],[F.O[0]+F.u[0]*s+F.v[0]*F.w,F.O[1]+F.u[1]*s+F.v[1]*F.w],C.flightS,.6);}
+    const m=q=>[F.O[0]+F.u[0]*q+F.v[0]*F.w/2,F.O[1]+F.u[1]*q+F.v[1]*F.w/2];
+    arrow(g,m(Math.min(.15,F.L*.1)),m(F.L*.9),C.ink);
+    text(g,'UP',[m(0)[0]+F.v[0]*F.w*.3,m(0)[1]+F.v[1]*F.w*.3],C.ink,10);
+    const lb=m(F.L/2);text(g,`${f.name}  ${f.n}R`,[lb[0]+F.v[0]*F.w*.25,lb[1]+F.v[1]*F.w*.25],C.ink,11);}
+  for(const b of ofType('beam')){poly(g,beamPts(b),C.beam,selC(b)||C.beamS,selC(b)?2.5:1);
+    text(g,`${b.name} ${b.kind&&b.kind!=='primary'?b.kind+' ':''}+${zTxt(b)}`,[(b.x1+b.x2)/2,(b.y1+b.y2)/2],C.ink,10);}
+  for(const c of ofType('column'))poly(g,rectPts(rectOf(c)),selC(c)||C.ink,null);
+  for(const sp of ofType('span')){const L=Math.hypot(sp.x2-sp.x1,sp.y2-sp.y1)||1,nx=-(sp.y2-sp.y1)/L*sp.width/2,ny=(sp.x2-sp.x1)/L*sp.width/2;
+    g.globalAlpha=.08;poly(g,[[sp.x1+nx,sp.y1+ny],[sp.x2+nx,sp.y2+ny],[sp.x2-nx,sp.y2-ny],[sp.x1-nx,sp.y1-ny]],C.span);g.globalAlpha=1;
+    const c=selC(sp)||C.span;line(g,[sp.x1,sp.y1],[sp.x2,sp.y2],c,2,[8,4]);
+    for(const[x,y]of[[sp.x1,sp.y1],[sp.x2,sp.y2]]){const[sx,sy]=toS(x,y);g.beginPath();g.moveTo(sx,sy);g.lineTo(sx-6,sy+10);g.lineTo(sx+6,sy+10);g.closePath();g.fillStyle=c;g.fill();}
+    const t=.3;text(g,`${sp.name}  ${L.toFixed(2)} m`,[sp.x1+(sp.x2-sp.x1)*t+nx*.6,sp.y1+(sp.y2-sp.y1)*t+ny*.6],c,11);}
+  const s=selSet().size===1&&byId(sel);
+  if(s&&(s.type==='beam'||s.type==='span'))for(const[x,y]of[[s.x1,s.y1],[s.x2,s.y2]]){const[sx,sy]=toS(x,y);g.fillStyle=C.accent;g.fillRect(sx-4,sy-4,8,8);}
+  if(drag&&drag.kind==='box'){const[a,b]=[drag.a,drag.b];g.strokeStyle=C.accent;g.lineWidth=1;g.setLineDash(b[0]<a[0]?[5,4]:[]); // CAD style: dashed = crossing
+    g.globalAlpha=.08;g.fillStyle=C.accent;g.fillRect(a[0],a[1],b[0]-a[0],b[1]-a[1]);g.globalAlpha=1;g.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1]);g.setLineDash([]);}
+  if(drag&&drag.kind==='draw'&&tool==='grid'){const[a,b]=[drag.a,drag.b],ax=Math.abs(b[1]-a[1])>=Math.abs(b[0]-a[0])?'x':'y',v=ax==='x'?a[0]:a[1];
+    const prev=grids(ax).filter(q=>q.v<v-1e-6).pop(),sp=toS(...a);g.strokeStyle=C.accent;g.lineWidth=1.5;g.setLineDash([14,3,2,3]);g.beginPath();
+    if(ax==='x'){g.moveTo(sp[0],0);g.lineTo(sp[0],H);}else{g.moveTo(0,sp[1]);g.lineTo(W,sp[1]);}g.stroke();g.setLineDash([]);
+    text(g,`grid ${nextGridName(ax)}`+(prev?`  ·  c/c ${(v-prev.v).toFixed(3)} m from ${prev.n}`:''),[b[0],b[1]],C.accent,12,'left');}
+  else if(drag&&drag.kind==='draw'){const[a,b]=[drag.a,drag.b];
+    if(tool==='column'&&a[0]===b[0]&&a[1]===b[1])return;
+    if(tool==='beam'||tool==='span')line(g,a,orth(a,b),C.accent,2,[5,4]);
+    else poly(g,rectPts({x0:Math.min(a[0],b[0]),y0:Math.min(a[1],b[1]),x1:Math.max(a[0],b[0]),y1:Math.max(a[1],b[1])}),null,C.accent,1.5);
+    const d=Math.hypot(b[0]-a[0],b[1]-a[1]);text(g,`${Math.abs(b[0]-a[0]).toFixed(2)} × ${Math.abs(b[1]-a[1]).toFixed(2)} m`,[b[0],b[1]],C.accent,11,'left');void d;}
+}
+// dash-dot structural grid lines with label bubbles at the top (vertical) and left (horizontal)
+function gridLines(g,W,H,gv,fx,gh,fy){
+  const bub=(x,y,n)=>{g.setLineDash([]);g.beginPath();g.arc(x,y,10,0,7);g.fillStyle=C.canvas;g.fill();g.strokeStyle=C.ink;g.lineWidth=1;g.stroke();
+    g.fillStyle=C.ink;g.font='bold 11px system-ui';g.textAlign='center';g.textBaseline='middle';g.fillText(n,x,y);};
+  g.strokeStyle=C.muted;g.lineWidth=.8;g.setLineDash([14,3,2,3]);
+  for(const q of gv){const x=Math.round(fx(q.v))+.5;g.strokeStyle=isSel(q.id)?C.accent:C.muted;g.lineWidth=isSel(q.id)?2:.8;g.beginPath();g.moveTo(x,30);g.lineTo(x,H);g.stroke();}
+  for(const q of gh||[]){const y=Math.round(fy(q.v))+.5;g.strokeStyle=isSel(q.id)?C.accent:C.muted;g.lineWidth=isSel(q.id)?2:.8;g.beginPath();g.moveTo(30,y);g.lineTo(W,y);g.stroke();}
+  for(const q of gv)bub(fx(q.v),18,q.n);for(const q of gh||[])bub(18,fy(q.v),q.n);g.setLineDash([]);
+  // c/c dimension chains between adjacent grids
+  g.strokeStyle=C.ink;g.fillStyle=C.ink;g.lineWidth=.8;g.font='10px system-ui';g.textBaseline='bottom';
+  const dim=(a,b,horiz)=>{g.beginPath();if(horiz){g.moveTo(a,40);g.lineTo(b,40);g.moveTo(a,36);g.lineTo(a,44);g.moveTo(b,36);g.lineTo(b,44);}
+    else{g.moveTo(40,a);g.lineTo(40,b);g.moveTo(36,a);g.lineTo(44,a);g.moveTo(36,b);g.lineTo(44,b);}g.stroke();};
+  for(let i=1;i<gv.length;i++){const a=fx(gv[i-1].v),b=fx(gv[i].v);dim(a,b,1);g.textAlign='center';g.fillText((gv[i].v-gv[i-1].v).toFixed(3),(a+b)/2,38);}
+  const H2=gh||[];for(let i=1;i<H2.length;i++){const a=fy(H2[i-1].v),b=fy(H2[i].v);dim(a,b,0);g.save();g.translate(38,(a+b)/2);g.rotate(-Math.PI/2);g.textAlign='center';g.fillText((H2[i].v-H2[i-1].v).toFixed(3),0,0);g.restore();}
+}
+const orth=(a,b)=>Math.abs(b[0]-a[0])>=Math.abs(b[1]-a[1])?[b[0],a[1]]:[a[0],b[1]];
+function hit(x,y){const tol=6/vp.s;
+  for(const t of['span','beam']){for(const it of ofType(t).reverse())if(distSeg(x,y,it.x1,it.y1,it.x2,it.y2)<=Math.max(tol,(it.b||0)/2000))return it;}
+  for(const t of['column','flight','landing']){for(const it of ofType(t).reverse()){const r=rectOf(it);if(x>=r.x0&&x<=r.x1&&y>=r.y0&&y<=r.y1)return it;}}
+  return ofType('grid').find(g=>Math.abs((g.axis==='x'?x:y)-g.v)<=tol)||null;}
+function snapToBeam(p){let best=null,bd=0.3;for(const b of ofType('beam')){const d=distSeg(p[0],p[1],b.x1,b.y1,b.x2,b.y2);if(d<bd){bd=d;best=b;}}
+  if(!best)return p;const dx=best.x2-best.x1,dy=best.y2-best.y1,l2=dx*dx+dy*dy,t=clamp(((p[0]-best.x1)*dx+(p[1]-best.y1)*dy)/l2,0,1);return[r4(best.x1+t*dx),r4(best.y1+t*dy)];}
+function create(a,b){
+  const p=S.p,dx=b[0]-a[0],dy=b[1]-a[1];
+  if(tool==='grid'){if(Math.hypot(dx,dy)*vp.s<10)return;const axis=Math.abs(dy)>=Math.abs(dx)?'x':'y';
+    commit();sel=add({type:'grid',axis,v:axis==='x'?a[0]:a[1],name:nextGridName(axis)}).id;focusCC=true;}
+  if(tool==='column'){let box=[Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.max(a[0],b[0]),Math.max(a[1],b[1])];
+    if(Math.hypot(dx,dy)*vp.s<10){const t=20/vp.s;box=[a[0]-t,a[1]-t,a[0]+t,a[1]+t];} // click = nearest intersection within 20 px
+    commit();const c=colsAt(...box);if(!c.length){hist.pop();return;}sel=c[c.length-1].id;msel=new Set(c.map(i=>i.id));}
+  if(tool==='landing'){if(Math.abs(dx)<0.1||Math.abs(dy)<0.1)return;
+    const o={type:'landing',x:Math.min(a[0],b[0]),y:Math.min(a[1],b[1]),w:r4(Math.abs(dx)),h:r4(Math.abs(dy)),t:p.tl,z:0},r=rectOf(o);
+    for(const f of ofType('flight')){const F=frame(f),mx=F.O[0]+F.u[0]*F.L+F.v[0]*F.w/2,my=F.O[1]+F.u[1]*F.L+F.v[1]*F.w/2;
+      if(mx>=r.x0-.02&&mx<=r.x1+.02&&my>=r.y0-.02&&my<=r.y1+.02){o.z=r4(f.z0+F.H);break;}}
+    commit();sel=add(o).id;}
+  if(tool==='flight'){const ax=Math.abs(dx)>=Math.abs(dy),len=Math.abs(ax?dx:dy),lat=Math.abs(ax?dy:dx);if(len<p.T/1000)return;
+    const n=Math.max(2,Math.round(len*1000/p.T)+1),L=(n-1)*p.T/1000,w=lat>=0.3?r4(lat):p.width,sg=Math.sign(ax?dx:dy),ls=(ax?dy:dx)<0&&lat>=0.3;
+    const o={type:'flight',dir:(sg>0?'+':'-')+(ax?'x':'y'),n,T:p.T,R:p.R,t:p.t,width:w,z0:levelGuess(a[0],a[1],0.05)??0};
+    if(ax){o.x=r4(sg>0?a[0]:a[0]-L);o.y=r4(ls?a[1]-w:a[1]);}else{o.y=r4(sg>0?a[1]:a[1]-L);o.x=r4(ls?a[0]-w:a[0]);}
+    commit();sel=add(o).id;}
+  if(tool==='beam'||tool==='span'){b=orth(a,b);if(Math.hypot(b[0]-a[0],b[1]-a[1])<0.1)return;
+    if(tool==='beam'){const onCol=p=>ofType('column').some(c=>Math.abs(c.x-p[0])<1e-6&&Math.abs(c.y-p[1])<1e-6);
+      commit();sel=add({type:'beam',kind:onCol(a)&&onCol(b)?'primary':'secondary',x1:a[0],y1:a[1],x2:b[0],y2:b[1],b:230,D:450,z:levelGuess((a[0]+b[0])/2,(a[1]+b[1])/2,0.3)??0}).id;}
+    else{a=snapToBeam(a);b=snapToBeam(b);const o={type:'span',x1:a[0],y1:a[1],x2:b[0],y2:b[1],width:p.width};
+      const f=ofType('flight').find(f=>crosses(o,f));if(f)o.width=f.width;commit();sel=add(o).id;}}
+}
+// left→right drag = window (fully inside), right→left = crossing (touches); grids only by crossing
+function boxSelect(d){if(Math.hypot(d.b[0]-d.a[0],d.b[1]-d.a[1])<4)return;
+  const[ax,ay]=toW(...d.a),[bx,by]=toW(...d.b),x0=Math.min(ax,bx),x1=Math.max(ax,bx),y0=Math.min(ay,by),y1=Math.max(ay,by),cross=d.b[0]<d.a[0];
+  const ids=S.items.filter(it=>{if(it.type==='grid'){const v=it.v;return cross&&(it.axis==='x'?v>=x0&&v<=x1:v>=y0&&v<=y1);}
+    const r=it.type==='flight'||it.type==='landing'||it.type==='column'?rectOf(it):{x0:Math.min(it.x1,it.x2),x1:Math.max(it.x1,it.x2),y0:Math.min(it.y1,it.y2),y1:Math.max(it.y1,it.y2)};
+    return cross?r.x0<=x1&&r.x1>=x0&&r.y0<=y1&&r.y1>=y0:r.x0>=x0&&r.x1<=x1&&r.y0>=y0&&r.y1<=y1;}).map(i=>i.id);
+  msel=new Set([...(d.add?selSet():[]),...ids]);sel=msel.has(sel)?sel:[...msel][0]??null;}
+const mouse=e=>{const r=cP.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top];};
+cP.addEventListener('contextmenu',e=>e.preventDefault());
+cP.addEventListener('pointerdown',e=>{
+  cP.setPointerCapture(e.pointerId);const m=mouse(e),w=toW(...m);
+  if(e.button!==0||tool==='pan'){drag={kind:'pan',m,ox:vp.ox,oy:vp.oy};return;}
+  if(tool==='select'){const s=selSet().size===1&&byId(sel),snapStr=JSON.stringify(S);
+    if(s&&(s.type==='beam'||s.type==='span'))for(const k of[1,2]){const[sx,sy]=toS(s['x'+k],s['y'+k]);if(Math.hypot(sx-m[0],sy-m[1])<9){drag={kind:'end',k,it:s,snapStr};return;}}
+    const h=hit(...w);
+    if(e.shiftKey&&h){const set=new Set(selSet());set.has(h.id)?set.delete(h.id):set.add(h.id);msel=set;sel=set.has(h.id)?h.id:[...set][0]??null;refresh(true);return;}
+    if(!h){if(!e.shiftKey)sel=null;drag={kind:'box',a:m,b:m,add:e.shiftKey};refresh(true);return;}
+    if(!isSel(h.id))sel=h.id;
+    const its=[...selSet()].map(byId);drag={kind:'move',its,w0:w,orig:its.map(i=>({...i})),snapStr};refresh(true);return;}
+  const a=gsnapP(w);drag={kind:'draw',a,b:a};
+});
+cP.addEventListener('pointermove',e=>{
+  const m=mouse(e),w=toW(...m);
+  if(!drag)return;
+  if(drag.kind==='pan'){vp.ox=drag.ox+m[0]-drag.m[0];vp.oy=drag.oy+m[1]-drag.m[1];}
+  else if(drag.kind==='draw')drag.b=gsnapP(w);
+  else if(drag.kind==='box')drag.b=m;
+  else if(drag.kind==='move')drag.its.forEach((it,i)=>{const o=drag.orig[i],dx=snap(w[0]-drag.w0[0]),dy=snap(w[1]-drag.w0[1]);
+    if(it.type==='grid')it.v=r4(o.v+(o.axis==='x'?dx:dy));
+    else if('x' in o){it.x=r4(o.x+dx);it.y=r4(o.y+dy);}else{it.x1=r4(o.x1+dx);it.y1=r4(o.y1+dy);it.x2=r4(o.x2+dx);it.y2=r4(o.y2+dy);}});
+  else if(drag.kind==='end'){let q=gsnapP(w);const k=drag.k,o=3-k;q=orth([drag.it['x'+o],drag.it['y'+o]],q);
+    if(drag.it.type==='span')q=snapToBeam(q);drag.it['x'+k]=q[0];drag.it['y'+k]=q[1];}
+  drawPlan();
+});
+cP.addEventListener('pointerup',()=>{if(!drag)return;const d=drag;drag=null;
+  if(d.kind==='draw')create(d.a,d.b);
+  if(d.kind==='box')boxSelect(d);
+  if(d.snapStr&&d.snapStr!==JSON.stringify(S))hist.push(d.snapStr);
+  refresh(true);});
+cP.addEventListener('wheel',e=>{e.preventDefault();const m=mouse(e),w=toW(...m),f=e.deltaY<0?1.15:1/1.15;vp.s=clamp(vp.s*f,5,2000);vp.ox=m[0]-w[0]*vp.s;vp.oy=m[1]+w[1]*vp.s;drawPlan();},{passive:false});
+const HINT={select:'click to select, drag empty space to box-select (→ inside, ← crossing), Shift+click to add/remove, drag to move, Del to delete',pan:'drag to pan, wheel to zoom',grid:'step 1 — drag a vertical line (numbered grid) or horizontal line (lettered grid); then type its c/c in the panel',
+  column:'step 2 — click a grid intersection, or drag a box to place columns at every intersection inside',
+  flight:'step 4 — drag from the bottom step along the UP direction (drag sideways too to set width)',landing:'drag a rectangle',
+  beam:'step 3 — drag column to column (snaps to grids, orthogonal); set Type in the panel: primary / secondary / landing / side (side follows the flight slope)',
+  span:'drag from support beam to support beam along the spanning direction'};
+
+// ---------- elevation ----------
+function profile(f){const T=f.T/1000,R=f.R/1000,ts=f.t/1000*Math.hypot(R,T)/T,n=f.n,pts=[[0,-ts],[0,R]];
+  for(let i=1;i<n;i++)pts.push([i*T,i*R],[i*T,(i+1)*R]);pts.push([(n-1)*T,(n-1)*R-ts]);return pts;}
+function drawElev(){
+  const cv=$('#cElev'),[g,W,H]=sizeCanvas(cv);g.fillStyle=C.canvas;g.fillRect(0,0,W,H);
+  const ax=$('#elevDir').value,hi=ax==='x'?0:1;
+  const sh=[];let h0=1e9,h1=-1e9,z0=1e9,z1=-1e9;const ext=(h,z)=>{h0=Math.min(h0,h);h1=Math.max(h1,h);z0=Math.min(z0,z);z1=Math.max(z1,z);};
+  for(const it of S.items){
+    if(it.type==='landing'){const r=rectOf(it),a=hi?r.y0:r.x0,b=hi?r.y1:r.x1,t=it.t/1000;sh.push({it,pts:[[a,it.z-t],[b,it.z-t],[b,it.z],[a,it.z]],fill:C.landing,st:C.landingS});}
+    if(it.type==='flight'){const F=frame(it);
+      if(F.u[hi]!==0)sh.push({it,pts:profile(it).map(([s,z])=>[F.O[hi]+F.u[hi]*s,it.z0+z]),fill:C.flight,st:C.flightS});
+      else{const r=F.r,a=hi?r.y0:r.x0,b=hi?r.y1:r.x1,ts=it.t/1000*Math.hypot(it.R,it.T)/it.T;
+        sh.push({it,pts:[[a,it.z0-ts],[b,it.z0-ts],[b,it.z0+F.H],[a,it.z0+F.H]],fill:C.flight,st:C.flightS,risers:{a,b,n:it.n,R:it.R/1000,z0:it.z0}});}}
+    if(it.type==='beam'){const top=beamTop(it),D=it.D/1000,L=Math.hypot(it.x2-it.x1,it.y2-it.y1)||1,u=[(it.x2-it.x1)/L,(it.y2-it.y1)/L];let pts;
+      if(Math.abs(u[hi])>Math.abs(u[1-hi])){const h=s=>(hi?it.y1:it.x1)+u[hi]*s;pts=[...top.map(([s,z])=>[h(s),z]),...top.slice().reverse().map(([s,z])=>[h(s),z-D])];}
+      else{const c=hi?it.y1:it.x1,zs=top.map(p=>p[1]),zt=Math.max(...zs),zb=Math.min(...zs)-D;pts=[[c-it.b/2000,zb],[c+it.b/2000,zb],[c+it.b/2000,zt],[c-it.b/2000,zt]];}
+      sh.push({it,pts,fill:C.beam,st:C.beamS,top:1});}
+  }
+  {const zs=sh.flatMap(s=>s.pts.map(p=>p[1])),zb=Math.min(0,...zs),zt=Math.max(0.1,...zs);
+    for(const c of ofType('column')){const r=rectOf(c),a=hi?r.y0:r.x0,b=hi?r.y1:r.x1;sh.push({it:c,pts:[[a,zb],[b,zb],[b,zt],[a,zt]],fill:C.muted,st:C.ink});}}
+  sh.forEach(s=>s.pts.forEach(p=>ext(...p)));if(!sh.length){h0=0;h1=6;z0=0;z1=3;}
+  const sc=Math.min((W-140)/(h1-h0||1),(H-80)/(z1-z0||1)),ox=90-h0*sc+((W-140)-(h1-h0)*sc)/2,oy=H-40+z0*sc;
+  const T=(h,z)=>[ox+h*sc,oy-z*sc];
+  const levels=[...new Set(S.items.flatMap(i=>i.type==='landing'||i.type==='beam'?[i.z]:i.type==='flight'?[i.z0,r4(i.z0+i.n*i.R/1000)]:[]).map(r4))];
+  g.font='11px system-ui';g.textAlign='left';g.textBaseline='bottom';
+  for(const z of levels){const y=Math.round(T(0,z)[1])+.5;g.strokeStyle=C.gridMaj;g.setLineDash([6,4]);g.beginPath();g.moveTo(0,y);g.lineTo(W,y);g.stroke();g.setLineDash([]);g.fillStyle=C.muted;g.fillText((z>=0?'+':'')+z.toFixed(3),4,y-2);}
+  gridLines(g,W,H,grids(ax),h=>T(h,0)[0]);
+  for(const s of sh.sort((a,b)=>(a.top||0)-(b.top||0))){g.beginPath();s.pts.forEach((p,i)=>{const[x,y]=T(...p);i?g.lineTo(x,y):g.moveTo(x,y);});g.closePath();
+    g.globalAlpha=.85;g.fillStyle=s.fill;g.fill();g.globalAlpha=1;g.strokeStyle=isSel(s.it.id)?C.accent:s.st;g.lineWidth=isSel(s.it.id)?2.5:1;g.stroke();
+    if(s.risers){g.strokeStyle=s.st;g.lineWidth=.6;g.beginPath();for(let i=1;i<=s.risers.n;i++){const[x1,y]=T(s.risers.a,s.risers.z0+i*s.risers.R),[x2]=T(s.risers.b,0);g.moveTo(x1,y);g.lineTo(x2,y);}g.stroke();}
+    const cx=s.pts.reduce((a,p)=>a+p[0],0)/s.pts.length,cz=Math.max(...s.pts.map(p=>p[1]));const[x,y]=T(cx,cz);
+    g.fillStyle=C.ink;g.textAlign='center';g.fillText(s.it.name,x,y-3);}
+  g.fillStyle=C.muted;g.textAlign='left';g.fillText(ax==='x'?'X →':'Y →',W-40,H-8);
+}
+
+// ---------- 3D ----------
+let T3=null;
+function init3d(){
+  if(T3)return T3;const host=$('#view3d');
+  if(!window.THREE||!THREE.OrbitControls){host.insertAdjacentHTML('afterbegin','<div class="msg">3D view needs an internet connection to load three.js.</div>');return null;}
+  const r=new THREE.WebGLRenderer({antialias:true});r.setPixelRatio(devicePixelRatio);host.prepend(r.domElement);
+  const scene=new THREE.Scene(),cam=new THREE.PerspectiveCamera(45,1,0.05,500),ctl=new THREE.OrbitControls(cam,r.domElement);
+  scene.add(new THREE.HemisphereLight(0xffffff,0x667788,.75));const dl=new THREE.DirectionalLight(0xffffff,.65);dl.position.set(5,10,7);scene.add(dl);
+  const grp=new THREE.Group();scene.add(grp);const grid=new THREE.GridHelper(40,40,0x888888,0xcccccc);scene.add(grid);
+  T3={r,scene,cam,ctl,grp,grid,fitted:false,labels:[],render:()=>{r.render(scene,cam);placeLabels();}};ctl.addEventListener('change',T3.render);
+  new ResizeObserver(()=>{const w=host.clientWidth,h=host.clientHeight;if(!w||!h)return;r.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();T3.render();}).observe(host);
+  return T3;
+}
+function build3d(){
+  const t=init3d();if(!t)return;
+  while(t.grp.children.length){const o=t.grp.children.pop();o.geometry&&o.geometry.dispose();}
+  t.scene.background=new THREE.Color(C.canvas);
+  const mat=(c,id)=>new THREE.MeshLambertMaterial({color:isSel(id)?C.accent:c,side:THREE.DoubleSide});
+  const wf=$('#wf').checked;
+  // wireframe: hide faces, keep coloured edges only
+  const put=(geo,c,id,ec)=>{const m=new THREE.Mesh(geo,mat(c,id));m.visible=!wf;t.grp.add(m);
+    t.grp.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo,30),new THREE.LineBasicMaterial(wf?{color:isSel(id)?C.accent:ec}:{color:0x333333,transparent:true,opacity:.45})));return m;};
+  const V=(x,y)=>new THREE.Vector3(x,0,-y);
+  for(const f of ofType('flight')){const F=frame(f),sh=new THREE.Shape(profile(f).map(([s,z])=>new THREE.Vector2(s,z)));
+    const geo=new THREE.ExtrudeGeometry(sh,{depth:F.w,bevelEnabled:false});
+    geo.applyMatrix4(new THREE.Matrix4().makeBasis(V(...F.u),new THREE.Vector3(0,1,0),V(...F.v)).setPosition(F.O[0],f.z0,-F.O[1]));put(geo,0x9fb8e8,f.id,0x3b6fd8);}
+  for(const l of ofType('landing')){const r=rectOf(l),t_=l.t/1000,geo=new THREE.BoxGeometry(l.w,t_,l.h);geo.translate((r.x0+r.x1)/2,l.z-t_/2,-(r.y0+r.y1)/2);put(geo,0xb7dcb0,l.id,0x4c9a52);}
+  // one box per straight piece of the beam's top profile (a side beam has three: flat, inclined, flat)
+  for(const b of ofType('beam')){const L=Math.hypot(b.x2-b.x1,b.y2-b.y1),D=b.D/1000,ux=(b.x2-b.x1)/L,uy=(b.y2-b.y1)/L,top=beamTop(b);
+    for(let i=1;i<top.length;i++){const[s0,z0]=top[i-1],[s1,z1]=top[i];if(s1-s0<1e-6)continue;
+      const geo=new THREE.BoxGeometry(Math.hypot(s1-s0,z1-z0),D,b.b/1000),sm=(s0+s1)/2;geo.translate(0,-D/2,0);
+      geo.rotateZ(Math.atan2(z1-z0,s1-s0));geo.rotateY(Math.atan2(uy,ux));geo.translate(b.x1+ux*sm,(z0+z1)/2,-(b.y1+uy*sm));put(geo,0xa08670,b.id,0x9b7b63);}}
+  {const zs=S.items.flatMap(i=>i.type==='beam'?beamTop(i).map(p=>p[1]):i.type==='landing'?[i.z]:i.type==='flight'?[i.z0,i.z0+frame(i).H]:[]),zb=Math.min(0,...zs),zt=Math.max(0.1,...zs);
+    for(const c of ofType('column')){const geo=new THREE.BoxGeometry(c.b/1000,zt-zb,c.D/1000);geo.translate(c.x,(zb+zt)/2,-c.y);put(geo,0x8a8f99,c.id,0x555b66);}}
+  loads3d(t);
+  if(!t.fitted)fit3d();t.render();
+}
+// ETABS line loads drawn on top of each beam: Stair Dead block, Stair Live stacked above, height ∝ kN/m
+function loads3d(t){
+  const host=$('#lbl3d');host.innerHTML='';t.labels=[];if(!$('#showLoads').checked)return;
+  const{out}=beamLoads(),all=[...out.values()].flat(),k=0.8/Math.max(1e-9,...all.map(r=>r.dl+r.ll)),pos={dl:[],ll:[]};
+  const P=(x,y,z)=>[x,z,-y];
+  for(const[b,rows]of out){const L=Math.hypot(b.x2-b.x1,b.y2-b.y1),ux=(b.x2-b.x1)/L,uy=(b.y2-b.y1)/L,at=s=>[b.x1+ux*s,b.y1+uy*s];
+    for(const r of rows){const n=Math.max(2,Math.ceil((r.b-r.a)/0.25)+1),hd=r.dl*k,hl=r.ll*k;
+      for(const[key,h0,h1]of[['dl',0,hd],['ll',hd,hd+hl]]){const a=pos[key];
+        let prev=null;
+        for(let i=0;i<n;i++){const s=r.a+(r.b-r.a)*i/(n-1),[x,y]=at(s),z=beamZ(b,s);a.push(...P(x,y,z+h1),...P(x,y,z+h0));
+          if(key==='dl'){const d=0.06;a.push(...P(x,y,z),...P(x+uy*d,y-ux*d,z+d*1.5),...P(x,y,z),...P(x-uy*d,y+ux*d,z+d*1.5));}
+          if(prev)a.push(...prev,...P(x,y,z+h1));prev=P(x,y,z+h1);}}
+      const[mx,my]=at((r.a+r.b)/2),el=document.createElement('div');
+      el.innerHTML=`<b>${b.name}</b> ${gridRef(b)} · ${r.sp.name} · ${f2(r.a)}–${f2(r.b)} m<br><span class="dl">Dead ${f2(r.dl)}</span> · <span class="ll">Live ${f2(r.ll)}</span> kN/m`;
+      host.append(el);t.labels.push({el,v:new THREE.Vector3(...P(mx,my,beamZ(b,(r.a+r.b)/2)+hd+hl+0.05))});}}
+  for(const[key,col]of[['dl',0xd9481c],['ll',0x2563eb]]){const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pos[key],3));
+    t.grp.add(new THREE.LineSegments(g,new THREE.LineBasicMaterial({color:col})));}
+}
+function placeLabels(){const t=T3,w=t.r.domElement.clientWidth,h=t.r.domElement.clientHeight;
+  for(const l of t.labels){const v=l.v.clone().project(t.cam),hide=v.z>1;l.el.style.display=hide?'none':'';
+    l.el.style.left=((v.x+1)/2*w)+'px';l.el.style.top=((1-v.y)/2*h)+'px';}}
+function fit3d(){const t=T3;if(!t||!t.grp.children.length)return;const bb=new THREE.Box3().setFromObject(t.grp),c=bb.getCenter(new THREE.Vector3()),s=bb.getSize(new THREE.Vector3()).length()||5;
+  t.ctl.target.copy(c);t.cam.position.set(c.x+s*.8,c.y+s*.7,c.z+s*1.0);t.grid.position.set(c.x,bb.min.y-.001,c.z);t.ctl.update();t.fitted=true;t.render();}
+
+// ---------- results ----------
+const f2=(v,d=2)=>Number.isFinite(v)?v.toFixed(d):'—',okS=b=>b?'<span class="ok">OK</span>':'<span class="ng">NOT OK</span>';
+function results(){
+  const p=S.p,{out,warn}=beamLoads();let h=`<h2>Stair loads on beams — for ETABS</h2>
+<div class="info">Unfactored line loads (kN/m) to assign as <b>uniform distributed frame loads</b> on each beam, in two load patterns: <b>Stair Dead</b> (self weight of waist/landing + steps + finishes) and <b>Stair Live</b>. Distances are measured from the beam's start point (X1,Y1). The stair itself is not modelled.</div>
+<table><tr><th>Beam</th><th>Grid</th><th>Top level (m)</th><th>Length (m)</th><th>From span</th><th>Start dist (m)</th><th>End dist (m)</th><th>Stair Dead (kN/m)</th><th>Stair Live (kN/m)</th><th>Factored (kN/m)</th></tr>`;
+  for(const[b,rows]of out){const L=Math.hypot(b.x2-b.x1,b.y2-b.y1);
+    if(!rows.length){h+=`<tr><td>${b.name}</td><td>${gridRef(b)}</td><td>${zTxt(b)}</td><td>${f2(L)}</td><td colspan="6" style="text-align:left;color:var(--muted)">no stair load</td></tr>`;continue;}
+    rows.forEach((r,i)=>h+=`<tr><td>${i?'':b.name}</td><td>${i?'':gridRef(b)}</td><td>${i?'':zTxt(b)}</td><td>${i?'':f2(L)}</td><td>${r.sp.name}</td><td>${f2(r.a)}</td><td>${f2(r.b)}</td><td>${f2(r.dl)}</td><td>${f2(r.ll)}</td><td>${f2(r.fu)}</td></tr>`);
+    const eq=k=>rows.reduce((s,r)=>s+r[k]*(r.b-r.a),0)/L;
+    h+=`<tr><td></td><td colspan="4" style="text-align:left;color:var(--muted)">equivalent UDL over full length</td><td>0.00</td><td>${f2(L)}</td><td>${f2(eq('dl'))}</td><td>${f2(eq('ll'))}</td><td>${f2(eq('fu'))}</td></tr>`;}
+  h+='</table>';
+  if(warn.length)h+='<div class="card warn"><b>Warnings</b><ul>'+warn.map(w=>`<li>${w}</li>`).join('')+'</ul></div>';
+  h+=`<h2>Slab design — IS 456:2000</h2><div class="info">M${p.fck} / Fe${p.fy}, clear cover ${p.cover} mm, main bar Ø${p.bar}, distribution Ø${p.dbar}, finishes ${p.ff} kN/m², live ${p.ll} kN/m², γc ${p.gc} kN/m³, γf ${p.gf}. Each span is designed as a 1 m wide simply supported strip; effective span = c/c of supports measured horizontally (cl 33.1); depth = waist thickness normal to soffit (cl 33.3).</div>`;
+  for(const sp of ofType('span')){const A=analyze(sp);if(!A){h+=`<div class="card">${sp.name}: too short.</div>`;continue;}const d=A.des;
+    h+=`<div class="card"><h4>${sp.name} — effective span ${f2(A.L,3)} m, strip width ${f2(sp.width)} m</h4>
+<div class="info">Supports: ${A.sup.map(s=>s.beam?s.beam.name:'none (wall/other)').join(' → ')}</div>
+<table><tr><th>Element</th><th>From (m)</th><th>To (m)</th><th>Length (m)</th><th>Slab SW</th><th>Steps</th><th>Finish</th><th>Share</th><th>DL (kN/m²)</th><th>LL (kN/m²)</th><th>wu (kN/m²)</th></tr>`;
+    for(const s of A.segs)h+=`<tr><td>${s.it.name} (${s.it.type}, t=${s.it.t})</td><td>${f2(s.a)}</td><td>${f2(s.b)}</td><td>${f2(s.b-s.a)}</td><td>${f2(s.ld.ws)}</td><td>${f2(s.ld.st)}</td><td>${f2(s.ld.ff)}</td><td>${s.k===1?'100%':'50% (cl 33.2)'}</td><td>${f2(s.dl)}</td><td>${f2(s.ll)}</td><td>${f2(p.gf*(s.dl+s.ll))}</td></tr>`;
+    h+=`</table><table><tr><th>Per m width</th><th>Dead</th><th>Live</th><th>Factored</th></tr>
+<tr><td>Reaction at start (kN/m)</td><td>${f2(A.D.RA)}</td><td>${f2(A.LL.RA)}</td><td>${f2(A.U.RA)}</td></tr>
+<tr><td>Reaction at end (kN/m)</td><td>${f2(A.D.RB)}</td><td>${f2(A.LL.RB)}</td><td>${f2(A.U.RB)}</td></tr>
+<tr><td>Max moment (kNm/m)</td><td>${f2(A.D.M)}</td><td>${f2(A.LL.M)}</td><td>${f2(A.U.M)} at x = ${f2(A.U.x)} m</td></tr></table>
+<div class="calc">D = ${d.D} mm,  d = D − cover − Ø/2 = ${d.D} − ${p.cover} − ${p.bar/2} = ${f2(d.d,1)} mm
+Mu = ${f2(d.Mu)} kNm/m;  xu,max/d = ${f2(d.xr,3)};  Mu,lim = ${f2(d.Q,3)}·b·d² = ${f2(d.Mlim)} kNm/m  → ${okS(d.flex)}${d.flex?'':`  (d required ≥ ${f2(d.dReq,0)} mm — increase waist thickness)`}
+Ast,req = 0.5·fck/fy·[1 − √(1 − 4.6Mu/(fck·b·d²))]·b·d = ${f2(d.Ast,0)} mm²/m;  Ast,min = ${p.fy>250?'0.12':'0.15'}% bD = ${f2(d.Amin,0)} mm²/m
+Main bars: Ø${p.bar} @ ${d.s} c/c  (max ${f2(d.sMax,0)})  → Ast,prov = ${f2(d.Aprov,0)} mm²/m
+Distribution: Ø${p.dbar} @ ${d.sd} c/c  (Ast = ${f2(d.Amin,0)}, max spacing ${f2(d.sdMax,0)})  → ${f2(d.Adprov,0)} mm²/m
+Shear: Vu = ${f2(d.Vu)} kN/m;  τv = ${f2(d.tv,3)} MPa;  pt = ${f2(d.pt,3)}%;  τc = ${f2(d.tc,3)};  k = ${f2(d.k,2)};  k·τc = ${f2(d.k*d.tc,3)}  → ${okS(d.shear)};  τv ≤ 0.5τc,max = ${f2(d.tcmax/2,2)} → ${okS(d.shearMax)}
+Deflection: fs = 0.58·fy·Ast,req/Ast,prov = ${f2(d.fs,0)} MPa;  kt = ${f2(d.kt)};  allowable l/d = 20 × kt = ${f2(d.ldAllow,1)};  actual = ${f2(d.ld,1)}  → ${okS(d.defl)}</div>
+<b>Provide:</b> ${d.D} mm waist, Ø${p.bar} @ ${d.s} mm c/c main, Ø${p.dbar} @ ${d.sd} mm c/c distribution ${d.flex&&d.shear&&d.shearMax&&d.defl?'<span class="ok">— all checks OK</span>':'<span class="ng">— revise</span>'}</div>`;}
+  if(!ofType('span').length)h+='<div class="info">No spans yet — draw spans or press <b>Auto spans</b>.</div>';
+  h+='<h2>Flight geometry</h2><table><tr><th>Flight</th><th>Risers</th><th>R (mm)</th><th>T (mm)</th><th>2R+T</th><th>Going (m)</th><th>Rise (m)</th><th>Levels</th></tr>';
+  for(const f of ofType('flight')){const F=frame(f),c=2*f.R+f.T;h+=`<tr><td>${f.name}</td><td>${f.n}</td><td>${f.R}</td><td>${f.T}</td><td>${c} ${c<550||c>700?'<span class="ng">(550–700)</span>':''}</td><td>${f2(F.L)}</td><td>${f2(F.H,3)}</td><td>${f2(f.z0,3)} → ${f2(f.z0+F.H,3)}</td></tr>`;}
+  $('#viewRes').innerHTML=h+'</table>';
+}
+function csv(){const{out}=beamLoads(),L=['Beam,Grid,Load Pattern,Start Dist (m),End Dist (m),Load (kN/m),Span'];
+  for(const[b,rows]of out)for(const r of rows){L.push(`${b.name},${gridRef(b)},Stair Dead,${f2(r.a,3)},${f2(r.b,3)},${f2(r.dl,3)},${r.sp.name}`);L.push(`${b.name},${gridRef(b)},Stair Live,${f2(r.a,3)},${f2(r.b,3)},${f2(r.ll,3)},${r.sp.name}`);}
+  download('stair-beam-loads.csv',L.join('\n'),'text/csv');}
+function download(name,txt,type){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([txt],{type}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
+
+// ---------- side panel ----------
+const SCH={
+  flight:[['name','Name','text'],['x','X min corner (m)'],['y','Y min corner (m)'],['dir','Up direction','sel',['+x','-x','+y','-y']],['width','Width (m)'],['n','No. of risers','int'],['R','Riser (mm)'],['T','Tread (mm)'],['t','Waist thickness (mm)'],['z0','Bottom level (m)']],
+  landing:[['name','Name','text'],['x','X min corner (m)'],['y','Y min corner (m)'],['w','Size along X (m)'],['h','Size along Y (m)'],['z','Top level (m)'],['t','Thickness (mm)']],
+  column:[['name','Name','text'],['x','X (m)'],['y','Y (m)'],['b','Size along X (mm)'],['D','Size along Y (mm)']],
+  beam:[['name','Name','text'],['kind','Type','sel',['primary','secondary','landing','side']],['x1','X1 (m)'],['y1','Y1 (m)'],['x2','X2 (m)'],['y2','Y2 (m)'],['b','Width b (mm)'],['D','Depth D (mm)'],['z','Top level (m)']],
+  grid:[['name','Label','text'],['v','Ordinate (m)']],
+  span:[['name','Name','text'],['x1','X1 (m)'],['y1','Y1 (m)'],['x2','X2 (m)'],['y2','Y2 (m)'],['width','Strip width (m)']]};
+const PSCH=[['fck','Concrete fck (MPa)','sel',[15,20,25,30,35,40]],['fy','Steel fy (MPa)','sel',[250,415,500,550]],['cover','Clear cover (mm)'],['bar','Main bar Ø (mm)','sel',[8,10,12,16,20]],
+  ['dbar','Distribution bar Ø (mm)','sel',[8,10,12]],['ff','Floor finish (kN/m²)'],['ll','Live load (kN/m²)'],['gc','Concrete unit wt (kN/m³)'],['gf','Load factor γf'],
+  ['T','Default tread (mm)'],['R','Default riser (mm)'],['width','Default flight width (m)'],['t','Default waist (mm)'],['tl','Default landing t (mm)'],['snap','Snap step (m)']];
+function form(host,sch,obj,onSet){host.innerHTML='';host.className='form';
+  for(const[k,lab,ty,opts]of sch){const l=document.createElement('label');l.textContent=lab;l.htmlFor='f_'+k;const el=document.createElement(ty==='sel'?'select':'input');el.id='f_'+k;
+    if(ty==='sel')el.innerHTML=opts.map(o=>`<option ${o==obj[k]?'selected':''}>${o}</option>`).join('');else{el.type=ty==='text'?'text':'number';el.step='any';el.value=obj[k];}
+    el.addEventListener('change',()=>{const str=ty==='text'||k==='dir'||k==='kind',v=str?el.value:+el.value;if(!str&&!Number.isFinite(v))return;commit();onSet(k,ty==='int'?Math.max(2,Math.round(v)):v);refresh(true);});
+    host.append(l,el);}}
+function panel(){
+  const it=byId(sel),host=$('#props'),n=selSet().size;
+  if(n>1)host.innerHTML=`<div class="info">${n} items selected: ${[...selSet()].map(i=>byId(i)?.name).join(', ')}. Drag any of them to move together, Del to delete, Shift+click to add/remove.</div>`;
+  else if(!it)host.innerHTML='<div class="info">Nothing selected. Pick a tool on the left and draw on the plan, or load a template.</div>';
+  else{form(host,SCH[it.type],it,(k,v)=>{it[k]=v;if(it.type==='span')it.auto=false;});const d=document.createElement('div');d.className='info';d.style.gridColumn='1/-1';
+    if(it.type==='flight'){const F=frame(it);d.innerHTML=`Going ${F.L.toFixed(2)} m · rise ${F.H.toFixed(3)} m · top level ${(it.z0+F.H).toFixed(3)} · slope ${(Math.atan(it.R/it.T)*180/Math.PI).toFixed(1)}° · 2R+T = ${2*it.R+it.T}`;}
+    if(it.type==='span'){const A=analyze(it);if(A)d.innerHTML=`Span ${A.L.toFixed(3)} m · supports ${A.sup.map(s=>s.beam?s.beam.name:'—').join(' → ')} · Mu ${A.U.M.toFixed(2)} kNm/m`+(it.auto?' · auto (regenerated by Auto spans; editing makes it manual)':'');}
+    if(it.type==='grid')gridExtras(host,it);
+    if(it.type==='beam'&&it.kind==='side')d.innerHTML=sideFlight(it)?`Side beam follows the adjacent flight: ${beamTop(it).map(([s,z])=>`${s.toFixed(2)} m @ +${z.toFixed(3)}`).join(' → ')}`:'Side beam: no parallel flight beside it yet — flat at top level. Draw the flight and it will crank to suit.';
+    host.append(d);}
+  $('#list').innerHTML=S.items.map(i=>`<div data-id="${i.id}" class="${isSel(i.id)?'sel':''}"><span>${i.name}</span><span>${i.type}</span></div>`).join('');
+}
+$('#list').addEventListener('click',e=>{const d=e.target.closest('[data-id]');if(d){sel=+d.dataset.id;msel.clear();refresh(true);}});
+let focusCC=false;
+// c/c editing: changing it shifts this grid and every grid beyond it; "Add" places a new grid at c/c beyond this one
+function gridExtras(host,it){
+  const G=grids(it.axis),prev=G.filter(q=>q.v<it.v-1e-6).pop(),cc=prev?r4(it.v-prev.v):null,row=(lab,el)=>{const l=document.createElement('label');l.textContent=lab;l.htmlFor=el.id;host.append(l,el);};
+  const inp=(id,v)=>{const e=document.createElement('input');e.type='number';e.step='any';e.id=id;e.value=v;return e;};
+  if(prev){const e=inp('f_cc',cc);row(`c/c from grid ${prev.n} (m)`,e);
+    e.addEventListener('change',()=>{const v=+e.value;if(!(v>0))return;commit();const dv=r4(v-cc);
+      for(const g of ofType('grid'))if(g.axis===it.axis&&g.v>=it.v-1e-6)g.v=r4(g.v+dv);refresh(true);});}
+  const nx=inp('f_next',cc||3);row('Next grid at c/c (m)',nx);
+  const b=document.createElement('button');b.textContent=`+ Add grid ${nextGridName(it.axis)} at c/c`;b.style.gridColumn='1/-1';
+  b.onclick=()=>{const v=+nx.value;if(!(v>0))return;commit();sel=add({type:'grid',axis:it.axis,v:r4(it.v+v),name:nextGridName(it.axis)}).id;refresh(true);};host.append(b);
+  if(focusCC){focusCC=false;const f=$('#f_cc')||nx;setTimeout(()=>{f.focus();f.select();});}
+}
+function paramsPanel(){form($('#params'),PSCH,S.p,(k,v)=>S.p[k]=v);}
+
+// ---------- wiring ----------
+function save(){try{localStorage.setItem('stairDesigner',JSON.stringify(S));}catch(e){}}
+function refresh(withPanel){readColors();save();drawPlan();if(tab==='Elev')drawElev();if(tab==='3d')build3d();if(tab==='Res')results();if(withPanel)panel();}
+$$('[data-tool]').forEach(b=>b.onclick=()=>{tool=b.dataset.tool;$('#hud').textContent=HINT[tool];$$('[data-tool]').forEach(x=>x.classList.toggle('on',x===b));cP.style.cursor=tool==='select'?'default':tool==='pan'?'grab':'crosshair';});
+$$('[data-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;$$('[data-tab]').forEach(x=>x.classList.toggle('on',x===b));$$('.view').forEach(v=>v.classList.toggle('show',v.id==='view'+tab));refresh();});
+$('#elevDir').onchange=()=>drawElev();
+$('#wf').onchange=$('#showLoads').onchange=()=>build3d();
+$('#tplSel').onchange=e=>{if(e.target.value)template(e.target.value);e.target.value='';};
+$('#bNew').onclick=()=>{if(!confirm('Clear the drawing?'))return;commit();S={p:S.p,items:[],nid:1};sel=null;refresh(true);};
+$('#bSave').onclick=()=>download('stair.json',JSON.stringify(S,null,1),'application/json');
+$('#bOpen').onclick=()=>$('#fOpen').click();
+$('#fOpen').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const o=JSON.parse(await f.text());if(!Array.isArray(o.items))throw 0;commit();o.nid=o.nid||o.items.length+1;migrateGrids(o);S={p:{...P0,...o.p},items:o.items,nid:o.nid};sel=null;fitPlan();if(T3)T3.fitted=false;refresh(true);}catch(_){alert('Not a valid stair file.');}e.target.value='';};
+$('#bCsv').onclick=csv;
+$('#bPrint').onclick=()=>{results();setTimeout(()=>print(),50);};
+$('#bUndo').onclick=undo;
+$('#bAuto').onclick=()=>{autoSpans();refresh(true);};
+$('#bDel').onclick=()=>{const D=selSet();if(!D.size)return;commit();S.items=S.items.filter(i=>!D.has(i.id));sel=null;refresh(true);};
+$('#bFit').onclick=()=>{if(tab==='3d')fit3d();else{fitPlan();drawPlan();}};
+addEventListener('keydown',e=>{if(/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))return;
+  if((e.ctrlKey||e.metaKey)&&e.key==='z'){e.preventDefault();undo();}else if(e.key==='Delete'||e.key==='Backspace')$('#bDel').click();
+  else if(e.key==='Escape'){drag=null;$('[data-tool=select]').click();drawPlan();}else if(e.key==='v')$('[data-tool=select]').click();});
+new ResizeObserver(()=>{drawPlan();if(tab==='Elev')drawElev();}).observe(cP);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>refresh());
+$('#themeSel').value=document.documentElement.dataset.theme||'';
+$('#themeSel').onchange=e=>{const t=e.target.value;if(t)document.documentElement.dataset.theme=t;else delete document.documentElement.dataset.theme;try{localStorage.setItem('stairTheme',t);}catch(e){}refresh();};
+
+// self-check: uniform load w on span L -> R = wL/2, M = wL²/8
+(()=>{const r=ssBeam([{a:0,b:4,w:10}],4);console.assert(Math.abs(r.RA-20)<1e-9&&Math.abs(r.M-20)<1e-6,'ssBeam UDL');
+  const r2=ssBeam([{a:0,b:1,w:6}],4);console.assert(Math.abs(r2.RA-5.25)<1e-9&&Math.abs(r2.RB-0.75)<1e-9,'ssBeam partial');
+  console.assert(Math.abs(tauC(0.5,25)-0.49)<1e-9&&Math.abs(kSlab(200)-1.2)<1e-9,'tables');})();
+
+let loaded=null;try{loaded=JSON.parse(localStorage.getItem('stairDesigner'));}catch(e){}
+paramsPanel();
+if(loaded&&Array.isArray(loaded.items)&&loaded.items.length){migrateGrids(loaded);S={p:{...P0,...loaded.p},items:loaded.items,nid:loaded.nid};readColors();fitPlan();refresh(true);}else{readColors();template('dog');hist.length=0;}
+</script>
+</body>
+</html>

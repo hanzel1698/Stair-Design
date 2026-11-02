@@ -1,0 +1,847 @@
+import { useApp, usePreview, drawStories, toast, visibleModel, type ToolName } from '../model/store';
+import type { Beam, Model, Pt } from '../model/types';
+import { logAutoSizes } from '../log/sessionLog';
+import { autoSizeBeams, noFitNote, RANK_NAME } from '../model/autoBeam';
+import { addBeams, addColumns, addSlab, cachedStoryNodes, findBay, gridSegs, makeGrid, moveIds, nextGridLabel, onGridLine, panelSize, setBeamEnd, setGridEnd, slabsUnderBeams, splitSlabsByBeams } from '../model/ops';
+import { columnOn, uid } from '../model/types';
+import { add, angleDeg, dist, fmt, offsetSeg, parseRelative, polyArea, projectOnSeg, segIntersect, side, sub, distToSeg, lineIntersect } from '../model/geom';
+import { snapPoint, cachedIntersections, columnOutline, type Snap, type SnapKind } from './snap';
+import { viewport } from './viewport';
+import { useUnderlay, saveUnderlayMeta, regionFor, sheetFor, rescaleDxf, rectOf } from '../underlay/store';
+import { openDialog, useFramePick, useMovePick } from '../ui/dialogState';
+import { fitAll } from './PlanView';
+import { flightFrom, flightStory, frame, landingStory, levelGuess, nextNames, clip, landingRect, rectPts } from '../stair/stair';
+import { storyElevations } from '../model/types';
+
+const SNAP_PX = 12;
+const P = () => usePreview.getState();
+const A = () => useApp.getState();
+
+const hints: Record<ToolName, string> = {
+  select: 'Click or drag a window (L→R: inside, R→L: crossing). Shift adds, Alt+drag picks nodes only. Del deletes.',
+  grid: 'Click two points to draw a grid line. Or use “Generate grids”.',
+  column: 'Click to place a column (snaps to grid intersections). Drag a window to fill all intersections.',
+  beam: 'Click start, then end (chained). Type dx,dy or @dist<angle or a length + Enter. Right-click/Esc ends the chain.',
+  beamOffset: 'Pick a grid or beam to offset from.',
+  slab: 'Click inside a bay bounded by beams (or grids) to create a slab.',
+  slabDraw: 'Click polygon corners; Enter or click the first point to close.',
+  flight: 'Click the bottom of the going, then a point along the UP direction (go sideways ≥ 300 mm to set the width).',
+  landing: 'Click two opposite corners. Its level is taken from the flight that ends in it.',
+  span: 'Click support to support along the spanning direction (snaps to beams).',
+  measure: 'Click points to measure distance (chained). Esc clears.',
+  angle: 'Click 3 points: start, vertex, end.',
+  area: 'Click polygon corners; Enter closes and shows the area.',
+  panel: 'Click inside a panel bounded by beams to show Lx, Ly (c/c of beams) and whether it is one-way or two-way.',
+  region: 'DXF setup: click two corners around one story plan.',
+  calibrate: 'Calibrate: click the two ends of a line whose real length you know.',
+  origin: 'Click the point (e.g. grid A/1) that should become the model origin (0,0). The whole model moves with it.',
+};
+
+// tools whose points snap to the underlay, so they must not run on the raw (setup) DXF
+const DRAW_TOOLS: ToolName[] = ['grid', 'column', 'beam', 'slabDraw', 'flight', 'landing', 'span'];
+
+// tool-local state
+let regionRect: { a: Pt; b: Pt } | null = null;
+let redrawId: string | null = null; // region tool is re-picking this region's box and reference point
+let calibPts: Pt[] = [];
+let calibStage: 'dist' | 'ref' = 'dist';
+let offsetSrc: [Pt, Pt] | null = null;
+let offsetFromGrid = false;
+
+export function resetTool() {
+  regionRect = null;
+  calibPts = [];
+  calibStage = 'dist';
+  offsetSrc = null;
+  const hint = redrawId && A().tool === 'region' ? `Redraw region (${useUnderlay.getState().regions.find((r) => r.id === redrawId)?.stories.join(', ')}): click two corners around its plan.` : hints[A().tool];
+  P().set({ rubber: [], rubberClosed: false, box: null, measure: null, panel: null, offsetLine: null, input: '', track: null, hint });
+}
+
+export function setTool(t: ToolName) {
+  redrawId = null;
+  A().setTool(t);
+  if (t === 'region' || t === 'calibrate') {
+    const u = useUnderlay.getState();
+    if (t === 'region' && u.kind !== 'dxf') return toast('Load a DXF underlay first.');
+    if (t === 'calibrate' && u.kind === 'none') return toast('Load a DXF or PDF underlay first.');
+    if (t === 'region' && !u.setupMode) {
+      u.set({ setupMode: true });
+      requestAnimationFrame(() => fitAll());
+    }
+  }
+  if (DRAW_TOOLS.includes(t)) leaveSetupView();
+  resetTool();
+}
+
+/**
+ * Drawing on the raw DXF (setup view) stores raw drawing coordinates, which end up as ETABS grid
+ * ordinates like 6547680. Switch back to the story-aligned view before drawing.
+ */
+function leaveSetupView() {
+  const u = useUnderlay.getState();
+  if (u.kind !== 'dxf') return;
+  if (u.setupMode && u.regions.length) {
+    u.set({ setupMode: false });
+    requestAnimationFrame(() => fitAll());
+    toast('Left the whole-DXF setup view so drawing uses story coordinates (reference point = 0,0).');
+  } else if (!u.regions.length) {
+    toast('No story region yet: points snap to raw DXF coordinates. Define a story region first, or use “Move model to origin” afterwards.');
+  }
+}
+
+/** Shift the whole model so `o` becomes (0,0), and move the underlay placement with it so it stays aligned. */
+export function moveModelToOrigin(o: Pt) {
+  if (!o.x && !o.y) return toast('That point is already the origin.');
+  const st = A();
+  const u = useUnderlay.getState();
+  type Box = { minX: number; minY: number; maxX: number; maxY: number };
+  const inBox = (b: Box, p: Pt = o) => p.x >= b.minX && p.x <= b.maxX && p.y >= b.minY && p.y <= b.maxY;
+  const isDxf = u.kind === 'dxf' && !!u.dxf;
+  // A model drawn on the raw drawing sits inside a region's raw box, not around the origin like
+  // the story-aligned view, even when the setup view is currently off.
+  const shifted = (r: (typeof u.regions)[number]) => ({ minX: r.rect.minX - r.ref.x, minY: r.rect.minY - r.ref.y, maxX: r.rect.maxX - r.ref.x, maxY: r.rect.maxY - r.ref.y });
+  const onRaw = isDxf && (u.setupMode || !u.regions.length || (u.regions.some((r) => inBox(r.rect)) && !u.regions.some((r) => inBox(shifted(r)))));
+  const hit = onRaw ? u.regions.filter((r) => inBox(r.rect)) : [];
+  const reg = onRaw && !hit.length ? regionFor(st.activeStory) : null;
+  // A raw point picked while the model already sits aligned to its region (origin at the region's
+  // reference point) is at (o - ref) in model coordinates, so move the model by that, not by o.
+  const target = hit[0] ?? reg;
+  const pts = [...st.model.grids.flatMap((g) => [{ x: g.x1, y: g.y1 }, { x: g.x2, y: g.y2 }]), ...st.model.columns];
+  const mid = pts.length ? { x: pts.reduce((a, p) => a + p.x, 0) / pts.length, y: pts.reduce((a, p) => a + p.y, 0) / pts.length } : null;
+  const d = target && mid && !inBox(target.rect, mid) ? sub(o, target.ref) : o;
+  if (d.x || d.y) {
+    if (!confirm(`Move the whole model by (${fmt(-d.x)}, ${fmt(-d.y)}) mm so this point becomes (0,0)?`)) return;
+    st.commit((m) => moveIds(m, [...m.grids, ...m.columns, ...m.beams, ...m.slabs].map((x) => x.id), -d.x, -d.y));
+    if (st.colAlign.ref) st.setColAlign({ ref: { x: st.colAlign.ref.x - d.x, y: st.colAlign.ref.y - d.y } });
+  }
+  if (isDxf && u.dxf) {
+    if (onRaw) {
+      // picked on the raw drawing: that raw point becomes the reference point of the region it lies in
+      const regions = hit.length
+        ? u.regions.map((r) => (hit.includes(r) ? { ...r, ref: { ...o } } : r))
+        : reg
+          ? u.regions.map((r) => (r === reg ? { ...r, ref: { ...o } } : r))
+          : [...u.regions, { id: uid(), stories: u.regions.length ? [st.activeStory] : st.model.stories.map((s) => s.name), rect: { ...u.dxf.fitBox }, ref: { ...o } }];
+      u.set({ regions, setupMode: false });
+    } else {
+      u.set({ regions: u.regions.map((r) => ({ ...r, ref: { x: r.ref.x + o.x, y: r.ref.y + o.y } })) });
+    }
+  } else if (u.kind === 'pdf') {
+    u.set({ sheets: u.sheets.map((s) => ({ ...s, ref: { x: s.ref.x + o.x / s.s, y: s.ref.y + o.y / s.s } })) });
+  }
+  saveUnderlayMeta();
+  setTool('select');
+  requestAnimationFrame(() => fitAll());
+  toast('Model moved: the picked point is now (0,0). Push to ETABS to update the grid ordinates.');
+}
+
+/**
+ * Column position after applying "align to point": on a vertical line (same X) or horizontal line
+ * (same Y) through the reference point, with the column centre, or its left/bottom or right/top
+ * face, on that line. The other coordinate comes from the cursor.
+ */
+export function alignedColumnPoint(pt: Pt): Pt {
+  const { colAlign: al, model, active, columnAngle } = A();
+  if (al.mode === 'off' || !al.ref) return pt;
+  const sec = model.frameSections.find((s) => s.name === active.column);
+  const r = (columnAngle * Math.PI) / 180;
+  const d = sec?.t3 || 400,
+    w = sec?.shape === 'Circle' ? d : sec?.t2 || 400;
+  const hx = sec?.shape === 'Circle' ? d / 2 : Math.abs(Math.cos(r)) * (d / 2) + Math.abs(Math.sin(r)) * (w / 2);
+  const hy = sec?.shape === 'Circle' ? d / 2 : Math.abs(Math.sin(r)) * (d / 2) + Math.abs(Math.cos(r)) * (w / 2);
+  const shift = (h: number) => (al.anchor === 'min' ? h : al.anchor === 'max' ? -h : 0);
+  return al.mode === 'x' ? { x: al.ref.x + shift(hx), y: pt.y } : { x: pt.x, y: al.ref.y + shift(hy) };
+}
+
+const snapKindsFor = (t: ToolName): SnapKind[] | undefined => {
+  if (t === 'column' && A().colAlign.picking) return undefined;
+  if (t === 'column') return ['intersection', 'column', 'end', 'mid', 'near'];
+  return undefined;
+};
+
+export function doSnap(screen: Pt): Snap {
+  const w = viewport.toWorld(screen);
+  const t = A().tool;
+  if ((t === 'select' || t === 'panel') && !picking()) return { p: w, kind: 'none' };
+  const rub = P().rubber;
+  const from = rub.length ? rub[rub.length - 1] : null;
+  // region corners and reference point are raw DXF points: never snap them to model elements
+  const m = visibleModel(A());
+  return snapPoint(t === 'region' ? { ...m, grids: [], columns: [], beams: [], slabs: [] } : m, w, SNAP_PX / viewport.k, {
+    story: A().activeStory,
+    from,
+    ortho: A().ortho && t !== 'region', // a box's opposite corner must not be locked level with the first
+    underlay: A().show.underlay,
+    only: snapKindsFor(t),
+  });
+}
+
+function liveText(from: Pt, to: Pt) {
+  return `L=${fmt(dist(from, to))}  ∠${fmt(angleDeg(from, to), 1)}°  dx=${fmt(to.x - from.x)} dy=${fmt(to.y - from.y)}`;
+}
+
+export function onMove(screen: Pt) {
+  const s = doSnap(screen);
+  const t = A().tool;
+  const p = P();
+  const upd: Partial<ReturnType<typeof P>> = { cursor: s.p, snap: s.kind === 'none' ? null : s };
+  if (movePicking()) {
+    const b = useMovePick.getState().base;
+    if (b) Object.assign(upd, { rubber: [b], hint: liveText(b, s.p) });
+    return p.set(upd);
+  }
+  if (picking()) {
+    const h = beamPick(s.p);
+    upd.pick = h && { a: h.a, p: h.p, text: `${fmt(h.t * h.len / 1000, 3)} m · ${fmt(h.t, 3)} of ${fmt(h.len / 1000, 3)} m` };
+    return p.set(upd);
+  }
+  if (s.kind !== 'none' && s.kind !== 'near' && s.kind !== 'ortho') upd.track = s.p;
+  const last = p.rubber[p.rubber.length - 1];
+  if (t === 'landing' && p.rubber.length === 1) upd.box = { a: p.rubber[0], b: s.p };
+  if (last && t === 'flight') upd.hint = flightHint(last, s.p);
+  else if (last && (t === 'beam' || t === 'span' || t === 'grid' || t === 'slabDraw' || t === 'area' || t === 'measure' || t === 'angle' || t === 'calibrate')) upd.hint = liveText(last, s.p);
+  if (t === 'region' && !regionRect && p.rubber.length === 1) upd.box = { a: p.rubber[0], b: s.p };
+  if (t === 'column' && !A().colAlign.picking && A().colAlign.mode !== 'off' && A().colAlign.ref) {
+    const q = alignedColumnPoint(s.p);
+    upd.cursor = q;
+    upd.snap = { p: q, kind: 'align' };
+  }
+  if (t === 'beamOffset' && offsetSrc) {
+    const w = viewport.toWorld(screen); // unsnapped: the side/distance follow the mouse
+    upd.cursor = w;
+    upd.snap = null;
+    const d = side(w, offsetSrc[0], offsetSrc[1]) > 0 ? 1 : -1;
+    const typed = parseFloat(p.input);
+    const off = !isNaN(typed) ? typed : Math.round(distToSegLine(w, offsetSrc) / 50) * 50;
+    upd.offsetLine = offsetSeg(offsetSrc[0], offsetSrc[1], d * off);
+    upd.hint = `Offset = ${fmt(off)}  (type a distance + Enter, or click)`;
+  }
+  p.set(upd);
+}
+
+/**
+ * Commit an edit that adds beams or moves beam ends; in Auto mode the new or reshaped beams then get
+ * sections from their supports and span (see model/autoBeam), with the active beam section as the preferred width.
+ * With “Split slabs at new beams” on, slabs those beams run across are first divided into the panels the beams make.
+ */
+export function commitBeams(fn: (m: Model) => Model) {
+  let picked = '',
+    cut = '';
+  let sized = null as { m: Model; ids: string[] } | null;
+  A().commit((m) => {
+    let out = fn(m);
+    if (out === m || (!A().autoBeam && !A().autoSplitSlabs)) return out;
+    const old = new Map(m.beams.map((b) => [b.id, b]));
+    const reshaped = (b: Beam) => {
+      const o = old.get(b.id);
+      return !o || o.x1 !== b.x1 || o.y1 !== b.y1 || o.x2 !== b.x2 || o.y2 !== b.y2;
+    };
+    const ids = out.beams.filter(reshaped).map((b) => b.id);
+    if (A().autoSplitSlabs) {
+      const s = splitSlabsByBeams(out, slabsUnderBeams(out, ids));
+      if (s.split) cut = `${s.split} slab${s.split > 1 ? 's' : ''} split into ${s.pieces} panels`;
+      out = s.model;
+    }
+    if (!A().autoBeam) return out;
+    const r = autoSizeBeams(out, ids, A().active.beam);
+    const kinds = [...new Set([...r.sizes.values()].map((s) => `${s.section} (${RANK_NAME[s.rank]}${s.periphery ? ', GF periphery' : ''})`))];
+    const note = noFitNote(r.sizes, A().active.beam);
+    picked = (kinds.length > 3 ? `${r.sizes.size} beams sized` : kinds.join(', ')) + (note ? '.' + note : '');
+    sized = { m: r.model, ids };
+    return r.model;
+  });
+  const msg = [picked && `Auto: ${picked}`, cut].filter(Boolean).join(' · ');
+  if (msg) toast(msg);
+  if (sized) logAutoSizes(sized.m, sized.ids, A().active.beam);
+}
+
+function flightHint(a: Pt, b: Pt) {
+  const m = A().model,
+    f = flightFrom(m, a, b, 0);
+  return f ? `${f.n} risers × ${f.R} = ${fmt(f.n * f.R)} rise · going ${fmt((f.n - 1) * f.T)} · width ${fmt(f.width)}` : liveText(a, b);
+}
+
+const distToSegLine = (p: Pt, [a, b]: [Pt, Pt]) => Math.abs(side(p, a, b)) / (dist(a, b) || 1);
+
+/** Called with a snapped world point on a primary click. */
+export function onClick(pt: Pt) {
+  const t = A().tool;
+  const p = P();
+  const commit = A().commit;
+  if (DRAW_TOOLS.includes(t) && useUnderlay.getState().setupMode && useUnderlay.getState().kind === 'dxf')
+    return toast('Untick “Show whole DXF (setup)” before drawing: the setup view uses raw DXF coordinates.');
+  switch (t) {
+    case 'grid': {
+      if (!p.rubber.length) return p.set({ rubber: [pt] });
+      const a = p.rubber[0];
+      if (dist(a, pt) < 1) return;
+      commit((m) => {
+        const g = makeGrid(a, pt, '');
+        g.label = nextGridLabel(m.grids, g.dir);
+        return { ...m, grids: [...m.grids, g] };
+      });
+      return p.set({ rubber: [] });
+    }
+    case 'column': {
+      const al = A().colAlign;
+      if (al.picking) {
+        A().setColAlign({ ref: pt, picking: false, mode: al.mode === 'off' ? 'x' : al.mode });
+        P().set({ hint: 'Reference point set. Columns now line up with it — move along the guide line and click.' });
+        return;
+      }
+      const q = alignedColumnPoint(pt);
+      commit((m) => addColumns(m, [q], drawStories(), A().active.column, A().columnAngle));
+      return;
+    }
+    case 'beam': {
+      if (!p.rubber.length) return p.set({ rubber: [pt] });
+      const a = p.rubber[p.rubber.length - 1];
+      commitBeams((m) => addBeams(m, [[a, pt]], drawStories(), A().active.beam));
+      return p.set({ rubber: [pt] });
+    }
+    case 'beamOffset': {
+      if (!offsetSrc) return pickOffsetSource(pt);
+      if (p.offsetLine) createOffsetBeam(p.offsetLine);
+      return;
+    }
+    case 'flight': {
+      if (!p.rubber.length) return p.set({ rubber: [pt] });
+      const a = p.rubber[0];
+      const m = A().model;
+      const f = flightFrom(m, a, pt, levelGuess(m, a.x, a.y, 50) ?? storyElevations(m)[A().activeStory]?.bottom ?? 0);
+      if (!f) return toast(`A flight needs at least one tread (${m.stair.T} mm) along the going.`);
+      commit((mm) => ({ ...mm, flights: [...mm.flights, f] }));
+      A().setSelection([f.id]);
+      return p.set({ rubber: [] });
+    }
+    case 'landing': {
+      if (!p.rubber.length) return p.set({ rubber: [pt] });
+      const a = p.rubber[0];
+      if (Math.abs(pt.x - a.x) < 100 || Math.abs(pt.y - a.y) < 100) return toast('Landing is too small.');
+      const m = A().model;
+      const l = { id: uid(), name: nextNames(m.landings.map((x) => x.name), 'L')(), x: Math.min(a.x, pt.x), y: Math.min(a.y, pt.y), w: Math.abs(pt.x - a.x), h: Math.abs(pt.y - a.y), t: m.stair.tl, z: storyElevations(m)[A().activeStory]?.top ?? 0 };
+      const r = landingRect(l);
+      // level of the flight whose top ends in it
+      for (const f of m.flights) {
+        const F = frame(f),
+          mx = F.O[0] + F.u[0] * F.L + (F.v[0] * F.w) / 2,
+          my = F.O[1] + F.u[1] * F.L + (F.v[1] * F.w) / 2;
+        if (mx >= r.x0 - 20 && mx <= r.x1 + 20 && my >= r.y0 - 20 && my <= r.y1 + 20) {
+          l.z = f.z0 + F.H;
+          break;
+        }
+      }
+      commit((mm) => ({ ...mm, landings: [...mm.landings, l] }));
+      A().setSelection([l.id]);
+      return p.set({ rubber: [], box: null });
+    }
+    case 'span': {
+      if (!p.rubber.length) return p.set({ rubber: [pt] });
+      const a = p.rubber[0];
+      if (dist(a, pt) < 100) return;
+      const m = A().model;
+      const sp = { id: uid(), name: nextNames(m.spans.map((x) => x.name), 'S')(), story: A().activeStory, x1: a.x, y1: a.y, x2: pt.x, y2: pt.y, width: m.stair.width };
+      const f = m.flights.find((f) => clip(sp.x1, sp.y1, sp.x2, sp.y2, frame(f).r));
+      if (f) sp.width = f.width;
+      commit((mm) => ({ ...mm, spans: [...mm.spans, sp] }));
+      A().setSelection([sp.id]);
+      return p.set({ rubber: [] });
+    }
+    case 'slab': {
+      const m = A().model;
+      const story = A().activeStory;
+      const segs: [Pt, Pt][] = m.beams.filter((b) => b.story === story).map((b) => [{ x: b.x1, y: b.y1 }, { x: b.x2, y: b.y2 }]);
+      let bay = findBay(segs, pt);
+      if (!bay) bay = findBay(gridSegs(m), pt);
+      if (!bay) return toast('No closed bay found here. Use “Draw slab” to draw it.');
+      for (const st of drawStories()) commit((mm) => addSlab(mm, bay!, st, A().active.slab));
+      return;
+    }
+    case 'panel': {
+      const story = A().activeStory;
+      const segs: [Pt, Pt][] = A().model.beams.filter((b) => b.story === story).map((b) => [{ x: b.x1, y: b.y1 }, { x: b.x2, y: b.y2 }]);
+      const bay = findBay(segs, pt);
+      if (!bay) {
+        p.set({ measure: null, panel: null });
+        return toast('No panel closed by beams here.');
+      }
+      if (bay.length !== 4) toast(`${bay.length}-sided panel: Lx and Ly are taken from its enclosing rectangle.`);
+      return p.set({ measure: { pts: [...bay, bay[0]], text: '' }, panel: panelSize(bay) });
+    }
+    case 'slabDraw':
+    case 'area': {
+      if (p.rubber.length >= 3 && dist(pt, p.rubber[0]) < SNAP_PX / viewport.k) return finishPolygon();
+      return p.set({ rubber: [...p.rubber, pt] });
+    }
+    case 'measure': {
+      const pts = [...p.rubber, pt];
+      return p.set({ rubber: pts, measure: { pts, text: measureText(pts) } });
+    }
+    case 'angle': {
+      const pts = [...p.rubber, pt];
+      if (pts.length === 3) {
+        let a = angleDeg(pts[1], pts[2]) - angleDeg(pts[1], pts[0]);
+        a = Math.abs(((a + 540) % 360) - 180);
+        return p.set({ rubber: [], measure: { pts, text: `Angle = ${fmt(a, 2)}°` } });
+      }
+      return p.set({ rubber: pts, measure: null });
+    }
+    case 'origin':
+      return moveModelToOrigin(pt);
+    case 'region': {
+      if (!regionRect) {
+        if (!p.rubber.length) return p.set({ rubber: [pt], hint: 'Click the opposite corner.' });
+        regionRect = { a: p.rubber[0], b: pt };
+        return p.set({ rubber: [], box: regionRect, hint: 'Click the reference point (e.g. grid A/1) that maps to the model origin.' });
+      }
+      const rect = regionRect;
+      regionRect = null;
+      p.set({ box: null });
+      if (!redrawId) return openDialog({ kind: 'region', rect, ref: pt });
+      const u = useUnderlay.getState();
+      const id = redrawId;
+      u.set({ regions: u.regions.map((r) => (r.id === id ? { ...r, rect: rectOf(rect.a, rect.b), ref: pt } : r)), setupMode: false });
+      saveUnderlayMeta();
+      setTool('select');
+      requestAnimationFrame(() => fitAll());
+      toast(`Region redrawn for ${u.regions.find((r) => r.id === id)?.stories.join(', ')}. Its new reference point is the model origin (0,0).`);
+      return;
+    }
+    case 'calibrate': {
+      const st = A().activeStory;
+      const isDxf = useUnderlay.getState().kind === 'dxf';
+      const sh = sheetFor(st);
+      if (!isDxf && !sh) return toast(`No PDF page assigned to ${st}.`);
+      if (calibStage === 'dist') {
+        if (calibPts.length === 2) calibPts = []; // a third click starts a new reference line
+        calibPts.push(pt);
+        p.set({ rubber: calibPts.length === 2 ? [] : [...calibPts], measure: calibPts.length === 2 ? { pts: [...calibPts], text: '' } : null });
+        if (calibPts.length === 2) {
+          const cur = dist(calibPts[0], calibPts[1]);
+          p.set({ hint: `Reference line is ${fmt(cur)} units now. Type its real length in mm and press Enter.` });
+          document.getElementById('cmd')?.focus();
+        }
+        return;
+      }
+      // ref stage (PDF only): world → PDF point
+      if (!sh) return;
+      const u = useUnderlay.getState();
+      const pdfPt = { x: pt.x / sh.s + sh.ref.x, y: pt.y / sh.s + sh.ref.y };
+      u.set({ sheets: u.sheets.map((x) => (x.story === st ? { ...x, ref: pdfPt } : x)) });
+      saveUnderlayMeta();
+      toast('Reference point set. That point is now the model origin (0,0) for this story.');
+      setTool('select');
+      return;
+    }
+  }
+}
+
+function measureText(pts: Pt[]) {
+  let tot = 0;
+  for (let i = 1; i < pts.length; i++) tot += dist(pts[i - 1], pts[i]);
+  if (pts.length < 2) return '';
+  const a = pts[pts.length - 2],
+    b = pts[pts.length - 1];
+  return `${pts.length > 2 ? `Total ${fmt(tot)} | ` : ''}L=${fmt(dist(a, b))}  dx=${fmt(b.x - a.x)}  dy=${fmt(b.y - a.y)}  ∠${fmt(angleDeg(a, b), 2)}°`;
+}
+
+function pickOffsetSource(pt: Pt) {
+  const m = A().model;
+  const tol = SNAP_PX / viewport.k;
+  let best: [Pt, Pt] | null = null,
+    bd = tol,
+    isGrid = false;
+  for (const b of m.beams) {
+    if (b.story !== A().activeStory) continue;
+    const a = { x: b.x1, y: b.y1 },
+      c = { x: b.x2, y: b.y2 };
+    const d = distToSeg(pt, a, c);
+    if (d < bd) (bd = d), (best = [a, c]), (isGrid = false);
+  }
+  for (const g of m.grids) {
+    const a = { x: g.x1, y: g.y1 },
+      c = { x: g.x2, y: g.y2 };
+    const d = distToSeg(pt, a, c);
+    if (d < bd) (bd = d), (best = [a, c]), (isGrid = true);
+  }
+  if (!best) return toast('Pick a grid line or a beam.');
+  offsetSrc = best;
+  offsetFromGrid = isGrid;
+  P().set({ hint: 'Move to the side, type a distance + Enter, or click.' });
+}
+
+function createOffsetBeam(line: [Pt, Pt]) {
+  let [a, b] = line;
+  if (offsetFromGrid) {
+    // trim to the first/last crossing grid
+    const m = A().model;
+    const ts: number[] = [];
+    for (const g of m.grids) {
+      const x = segIntersect(a, b, { x: g.x1, y: g.y1 }, { x: g.x2, y: g.y2 });
+      if (x) ts.push(x.t);
+    }
+    if (ts.length >= 2) {
+      const t0 = Math.min(...ts),
+        t1 = Math.max(...ts);
+      const d = sub(b, a);
+      [a, b] = [add(a, { x: d.x * t0, y: d.y * t0 }), add(a, { x: d.x * t1, y: d.y * t1 })];
+    }
+  }
+  commitBeams((m) => addBeams(m, [[a, b]], drawStories(), A().active.beam));
+  P().set({ input: '' });
+}
+
+export function finishPolygon() {
+  const p = P();
+  const t = A().tool;
+  const pts = p.rubber;
+  if (pts.length < 3) return;
+  if (t === 'slabDraw') {
+    for (const st of drawStories()) A().commit((m) => addSlab(m, pts, st, A().active.slab));
+    p.set({ rubber: [] });
+  } else if (t === 'area') {
+    let per = 0;
+    for (let i = 0; i < pts.length; i++) per += dist(pts[i], pts[(i + 1) % pts.length]);
+    p.set({ rubber: [], measure: { pts: [...pts, pts[0]], text: `Area = ${fmt(Math.abs(polyArea(pts)) / 1e6, 3)} m²   Perimeter = ${fmt(per)} mm` } });
+  }
+}
+
+/** Typed command-line input (Enter). */
+export function onInput(text: string) {
+  const t = A().tool;
+  const p = P();
+  p.set({ input: '' });
+  if (t === 'beamOffset' && offsetSrc) {
+    const d = parseFloat(text);
+    if (isNaN(d)) return;
+    const cur = p.cursor ?? offsetSrc[0];
+    const sgn = side(cur, offsetSrc[0], offsetSrc[1]) > 0 ? 1 : -1;
+    createOffsetBeam(offsetSeg(offsetSrc[0], offsetSrc[1], sgn * d));
+    return;
+  }
+  if (t === 'calibrate' && calibStage === 'dist' && calibPts.length === 2) {
+    const real = parseFloat(text);
+    if (!(real > 0)) return toast('Enter a positive distance in mm.');
+    const st = A().activeStory;
+    const u = useUnderlay.getState();
+    const cur = dist(calibPts[0], calibPts[1]);
+    if (u.kind === 'dxf') {
+      const f = real / cur;
+      rescaleDxf(u.dxfScale * f);
+      // the drawing grew by f around the origin; shrink the zoom by f so the screen picture stays put
+      viewport.k /= f;
+      viewport.changed();
+      const m = A().model;
+      const drawn = m.grids.length + m.columns.length + m.beams.length + m.slabs.length;
+      toast(`DXF scale set: 1 drawing unit = ${fmt(u.dxfScale * f, 4)} mm.` + (drawn ? ' Elements already drawn were not rescaled.' : ''));
+      calibPts = [];
+      setTool('select');
+      return;
+    }
+    u.set({ sheets: u.sheets.map((x) => (x.story === st ? { ...x, s: (x.s * real) / cur } : x)) });
+    saveUnderlayMeta();
+    calibPts = [];
+    calibStage = 'ref';
+    p.set({ rubber: [], hint: 'Scale set. Now click the reference point (e.g. grid A/1) → model origin.' });
+    return;
+  }
+  // point tools: relative to last rubber point, else to the tracked snap point
+  const last = p.rubber[p.rubber.length - 1] ?? p.track;
+  if (!last) return toast('Hover a snap point first to use as the base for typed input.');
+  const dir = p.cursor ? angleDeg(last, p.cursor) : 0;
+  const rel = parseRelative(text, dir);
+  if (!rel) return toast('Use dx,dy  or  @dist<angle  or  a length.');
+  onClick(add(last, rel));
+}
+
+/** Re-pick an existing region's box and reference point, keeping its stories. */
+export function redrawRegion(id: string) {
+  setTool('region');
+  if (useUnderlay.getState().kind !== 'dxf') return;
+  redrawId = id;
+  resetTool();
+}
+
+// ---------- frame load distance pick ----------
+
+/** The plan is picking a value for a dialog (frame load distance or move displacement) instead of running the tool. */
+export const picking = () => !!useFramePick.getState().done || movePicking();
+
+/** The selected beam on the active story nearest to `w`, and where `w` falls along it from its start. */
+function beamPick(w: Pt) {
+  const { model, selection, activeStory } = A();
+  const sel = new Set(selection);
+  let best: { a: Pt; p: Pt; t: number; len: number; d: number } | null = null;
+  for (const b of model.beams) {
+    if (b.story !== activeStory || !sel.has(b.id)) continue;
+    const a = { x: b.x1, y: b.y1 };
+    const q = projectOnSeg(w, a, { x: b.x2, y: b.y2 });
+    const d = dist(w, q.p);
+    if (!best || d < best.d) best = { a, p: q.p, t: q.t, len: dist(a, { x: b.x2, y: b.y2 }), d };
+  }
+  return best;
+}
+
+/** Start picking a distance along a selected beam; the dialog hides until a point is picked or Esc. */
+export function startFramePick(done: (t: number, len: number) => void, hint = 'Click a point along a selected beam: its distance from the beam start fills the dialog.') {
+  const { model, selection, activeStory } = A();
+  if (!model.beams.some((b) => b.story === activeStory && selection.includes(b.id))) return toast(`Select a beam on ${activeStory} to pick along (a column has no length in plan).`);
+  useFramePick.setState({ done });
+  P().set({ hint: `${hint} Esc or right-click returns without it.` });
+}
+
+export function endFramePick() {
+  useFramePick.setState({ done: null });
+  P().set({ pick: null, snap: null });
+  resetTool();
+}
+
+/** A primary click while picking: hand the position along the nearest selected beam to the dialog. */
+export function finishFramePick(screen: Pt) {
+  if (movePicking()) return clickMovePick(screen);
+  const h = beamPick(doSnap(screen).p);
+  const done = useFramePick.getState().done;
+  endFramePick();
+  if (h && done) done(h.t, h.len);
+}
+
+// ---------- move displacement pick ----------
+
+export const movePicking = () => !!useMovePick.getState().done;
+
+const MOVE_HINTS = ['Move: click the base point (snaps to grids, columns, beam ends...). Esc or right-click returns without it.', 'Move: click the destination point; dx and dy from the base point fill the dialog.'];
+let pickHints = MOVE_HINTS;
+
+/** Start picking a move as two points in the plan (base, then destination); the dialog hides until both are picked or Esc. `hints` reword the prompts for other two-point picks. */
+export function startMovePick(done: (dx: number, dy: number) => void, hints = MOVE_HINTS) {
+  pickHints = hints;
+  useMovePick.setState({ done, base: null });
+  P().set({ rubber: [], hint: hints[0] });
+}
+
+export function endMovePick() {
+  useMovePick.setState({ done: null, base: null });
+  P().set({ snap: null });
+  resetTool();
+}
+
+function clickMovePick(screen: Pt) {
+  const pt = doSnap(screen).p;
+  const { base, done } = useMovePick.getState();
+  if (!base) {
+    useMovePick.setState({ base: pt });
+    P().set({ rubber: [pt], hint: pickHints[1] });
+    return;
+  }
+  endMovePick();
+  done?.(pt.x - base.x, pt.y - base.y);
+}
+
+export function onCancel() {
+  if (movePicking()) return endMovePick();
+  if (picking()) return endFramePick();
+  const p = P();
+  if (p.rubber.length || p.measure || p.panel || offsetSrc || regionRect || p.box) return resetTool();
+  if (A().tool !== 'select') setTool('select');
+  else A().setSelection([]);
+}
+
+/** Column tool window: fill grid intersections inside the screen box. */
+export function fillIntersections(a: Pt, b: Pt) {
+  const minX = Math.min(a.x, b.x),
+    maxX = Math.max(a.x, b.x),
+    minY = Math.min(a.y, b.y),
+    maxY = Math.max(a.y, b.y);
+  const pts = cachedIntersections(A().model.grids).filter((w) => {
+    const s = viewport.toScreen(w);
+    return s.x >= minX && s.x <= maxX && s.y >= minY && s.y <= maxY;
+  });
+  if (!pts.length) return toast('No grid intersections in the window.');
+  A().commit((m) => addColumns(m, pts, drawStories(), A().active.column, A().columnAngle));
+  toast(`Placed columns at ${pts.length} intersections.`);
+}
+
+// ---------- selection ----------
+
+// ---------- beam and grid end grips (select tool) ----------
+
+/** A beam or grid end, or a landing corner (index into rectPts; the opposite corner stays put). */
+export type Grip = { id: string; end: 1 | 2 } | { id: string; corner: number };
+
+/** The end grip of a selected beam (active story) or grid, or the corner grip of a selected landing (active story), under the cursor, if any. */
+export function gripAt(screen: Pt): Grip | null {
+  const { selection, activeStory } = A();
+  const model = visibleModel(A());
+  const s = new Set(selection);
+  const w = viewport.toWorld(screen);
+  let best: Grip | null = null,
+    bd = 7 / viewport.k;
+  for (const b of model.beams)
+    if (s.has(b.id) && b.story === activeStory)
+      for (const end of [1, 2] as const) {
+        const d = dist(w, end === 1 ? { x: b.x1, y: b.y1 } : { x: b.x2, y: b.y2 });
+        if (d < bd) (bd = d), (best = { id: b.id, end });
+      }
+  for (const g of model.grids)
+    if (s.has(g.id))
+      for (const end of [1, 2] as const) {
+        const d = dist(w, end === 1 ? { x: g.x1, y: g.y1 } : { x: g.x2, y: g.y2 });
+        if (d < bd) (bd = d), (best = { id: g.id, end });
+      }
+  for (const l of model.landings)
+    if (s.has(l.id) && landingStory(model, l) === activeStory)
+      rectPts(landingRect(l)).forEach((q, corner) => {
+        const d = dist(w, q);
+        if (d < bd) (bd = d), (best = { id: l.id, corner });
+      });
+  return best;
+}
+
+/** Snapped position for a dragged grip; the element itself is left out so it can't snap to its own end or line. A grid end stays on the grid's line. */
+function gripSnap(g: Grip, screen: Pt): { s: Snap; fixed: Pt; p: Pt } | null {
+  const m = visibleModel(A());
+  if ('corner' in g) {
+    const l = m.landings.find((x) => x.id === g.id);
+    if (!l) return null;
+    const fixed = rectPts(landingRect(l))[(g.corner + 2) % 4];
+    const s = snapPoint({ ...m, landings: m.landings.filter((x) => x.id !== g.id) }, viewport.toWorld(screen), SNAP_PX / viewport.k, { story: A().activeStory, from: fixed, ortho: false, underlay: A().show.underlay });
+    return { s, fixed, p: s.p };
+  }
+  const b = m.beams.find((x) => x.id === g.id);
+  const gr = b ? undefined : m.grids.find((x) => x.id === g.id);
+  const e = b ?? gr;
+  if (!e) return null;
+  const fixed = g.end === 1 ? { x: e.x2, y: e.y2 } : { x: e.x1, y: e.y1 };
+  const s = snapPoint({ ...m, beams: m.beams.filter((x) => x.id !== g.id), grids: m.grids.filter((x) => x.id !== g.id) }, viewport.toWorld(screen), SNAP_PX / viewport.k, {
+    story: A().activeStory,
+    from: fixed,
+    ortho: !gr && A().ortho,
+    underlay: A().show.underlay,
+  });
+  return { s, fixed, p: gr ? onGridLine(gr, s.p) : s.p };
+}
+
+export function gripMove(g: Grip, screen: Pt) {
+  const r = gripSnap(g, screen);
+  if (!r) return;
+  P().set({ grip: [r.fixed, r.p], cursor: r.p, snap: r.s.kind === 'none' ? null : r.s, hint: liveText(r.fixed, r.p) });
+}
+
+export function gripDrop(g: Grip, screen: Pt) {
+  const r = gripSnap(g, screen);
+  P().set({ grip: null, snap: null, hint: hints.select });
+  if (!r) return;
+  if ('corner' in g) {
+    const { fixed: a, p: b } = r;
+    if (Math.abs(b.x - a.x) < 100 || Math.abs(b.y - a.y) < 100) return toast('Landing is too small.');
+    return A().commit((m) => ({ ...m, landings: m.landings.map((l) => (l.id === g.id ? { ...l, x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) } : l)) }));
+  }
+  if (dist(r.fixed, r.p) < 1) return toast('An element needs two different end points.');
+  if (A().model.grids.some((x) => x.id === g.id)) return A().commit((m) => setGridEnd(m, g.id, g.end, r.p));
+  commitBeams((m) => setBeamEnd(m, g.id, g.end, r.p));
+}
+
+export function gripCancel() {
+  P().set({ grip: null, snap: null, hint: hints.select });
+}
+
+export function hitTest(m: Model, screen: Pt, story: string): string | null {
+  const w = viewport.toWorld(screen);
+  const tol = 8 / viewport.k;
+  // nodes win over the column under them, but only within a few px of the node itself
+  if (A().show.nodes) {
+    let best: string | null = null,
+      bd = 6 / viewport.k;
+    for (const n of cachedStoryNodes(m, story)) {
+      const d = dist(n, w);
+      if (d < bd) (bd = d), (best = n.id);
+    }
+    if (best) return best;
+  }
+  const secs = new Map(m.frameSections.map((s) => [s.name, s]));
+  for (const c of m.columns)
+    if (columnOn(m, c, story)) {
+      const ol = columnOutline(c, secs.get(c.section));
+      if (dist(c, w) < tol || insidePoly(w, ol)) return c.id;
+    }
+  let best: string | null = null,
+    bd = tol;
+  for (const b of m.beams)
+    if (b.story === story) {
+      const d = distToSeg(w, { x: b.x1, y: b.y1 }, { x: b.x2, y: b.y2 });
+      if (d < bd) (bd = d), (best = b.id);
+    }
+  if (best) return best;
+  for (const sp of m.spans)
+    if (sp.story === story) {
+      const d = distToSeg(w, { x: sp.x1, y: sp.y1 }, { x: sp.x2, y: sp.y2 });
+      if (d < bd) (bd = d), (best = sp.id);
+    }
+  if (best) return best;
+  const inR = (r: { x0: number; y0: number; x1: number; y1: number }) => w.x >= r.x0 && w.x <= r.x1 && w.y >= r.y0 && w.y <= r.y1;
+  for (const f of m.flights) if (flightStory(m, f) === story && inR(frame(f).r)) return f.id;
+  for (const l of m.landings) if (landingStory(m, l) === story && inR(landingRect(l))) return l.id;
+  for (const g of m.grids) {
+    const d = distToSeg(w, { x: g.x1, y: g.y1 }, { x: g.x2, y: g.y2 });
+    if (d < bd) (bd = d), (best = g.id);
+  }
+  if (best) return best;
+  if (A().show.slabs) for (const s of m.slabs) if (s.story === story && insidePoly(w, s.pts)) return s.id;
+  return null;
+}
+
+function insidePoly(p: Pt, pts: Pt[]) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[i],
+      b = pts[j];
+    if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+/** Window (fully inside) or crossing (touching) selection, tested in screen space so view rotation is respected. */
+export function boxSelect(m: Model, a: Pt, b: Pt, story: string, crossing: boolean): string[] {
+  const minX = Math.min(a.x, b.x),
+    maxX = Math.max(a.x, b.x),
+    minY = Math.min(a.y, b.y),
+    maxY = Math.max(a.y, b.y);
+  const inB = (s: Pt) => s.x >= minX && s.x <= maxX && s.y >= minY && s.y <= maxY;
+  const corners = [
+    { x: minX, y: minY },
+    { x: maxX, y: minY },
+    { x: maxX, y: maxY },
+    { x: minX, y: maxY },
+  ];
+  const segHits = (p: Pt, q: Pt) => {
+    if (inB(p) || inB(q)) return true;
+    for (let i = 0; i < 4; i++) if (segIntersect(p, q, corners[i], corners[(i + 1) % 4])) return true;
+    return false;
+  };
+  const test = (pts: Pt[], closed: boolean) => {
+    const s = pts.map((p) => viewport.toScreen(p));
+    if (!crossing) return s.every(inB);
+    const n = closed ? s.length : s.length - 1;
+    for (let i = 0; i < n; i++) if (segHits(s[i], s[(i + 1) % s.length])) return true;
+    return s.length === 1 && inB(s[0]);
+  };
+  const ids: string[] = [];
+  for (const c of m.columns) if (columnOn(m, c, story) && test([c], false)) ids.push(c.id);
+  for (const bm of m.beams) if (bm.story === story && test([{ x: bm.x1, y: bm.y1 }, { x: bm.x2, y: bm.y2 }], false)) ids.push(bm.id);
+  for (const s of m.slabs) if (s.story === story && test(s.pts, true)) ids.push(s.id);
+  for (const f of m.flights) if (flightStory(m, f) === story && test(rectCorners(frame(f).r), true)) ids.push(f.id);
+  for (const l of m.landings) if (landingStory(m, l) === story && test(rectCorners(landingRect(l)), true)) ids.push(l.id);
+  for (const sp of m.spans) if (sp.story === story && test([{ x: sp.x1, y: sp.y1 }, { x: sp.x2, y: sp.y2 }], false)) ids.push(sp.id);
+  for (const g of m.grids) if (test([{ x: g.x1, y: g.y1 }, { x: g.x2, y: g.y2 }], false)) ids.push(g.id);
+  if (A().show.nodes) for (const n of cachedStoryNodes(m, story)) if (test([n], false)) ids.push(n.id);
+  return ids;
+}
+
+const rectCorners = (r: { x0: number; y0: number; x1: number; y1: number }): Pt[] => [
+  { x: r.x0, y: r.y0 },
+  { x: r.x1, y: r.y0 },
+  { x: r.x1, y: r.y1 },
+  { x: r.x0, y: r.y1 },
+];
+
+export { projectOnSeg, lineIntersect, regionFor };
