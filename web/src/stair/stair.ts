@@ -453,7 +453,8 @@ export interface BeamLoadRow {
 }
 
 export function beamLoads(m: Model) {
-  const out = new Map<Beam, BeamLoadRow[]>(m.beams.map((b) => [b, []])),
+  const byName = [...m.beams].sort((a, b) => +beamName(m, a).slice(1) - +beamName(m, b).slice(1));
+  const out = new Map<Beam, BeamLoadRow[]>(byName.map((b) => [b, []])),
     warn: string[] = [];
   for (const sp of m.spans) {
     const A = analyze(m, sp);

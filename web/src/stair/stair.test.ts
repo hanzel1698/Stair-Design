@@ -80,3 +80,12 @@ describe('beam names', () => {
     expect(byName.map(z)).toEqual([...byName.map(z)].sort((a, b) => a - b));
   });
 });
+
+describe('beam loads', () => {
+  it('lists beams in name order, whatever the list order', () => {
+    const m = template(emptyModel(), 'dog', 'Story1', 'B300x500', 'C400x400');
+    const shuffled = { ...m, beams: [...m.beams].reverse() };
+    const names = [...beamLoads(shuffled).out.keys()].map((b) => beamName(shuffled, b));
+    expect(names).toEqual(names.map((_, i) => `B${i + 1}`));
+  });
+});
