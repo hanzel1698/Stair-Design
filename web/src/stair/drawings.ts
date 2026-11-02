@@ -1,5 +1,5 @@
-import type { Beam, Flight, Model, Span } from '../model/types';
-import { analyze, beamName, frame, landingRect, profile, slabLoads, type BeamLoadRow } from './stair';
+import type { Beam, Flight, Landing, Model, Span } from '../model/types';
+import { analyze, beamName, flightStory, frame, landingRect, landingStory, profile, slabLoads, type BeamLoadRow } from './stair';
 
 // Report drawings as SVG strings: black linework on white "paper", world units mm, z / y up.
 
@@ -116,7 +116,40 @@ class Sheet {
 
 // ---------- general arrangement plan ----------
 
+const LEGEND = `<div class="info legend"><b>Legend:</b> thick outline — flight / landing slab (landings shaded) · thin lines — tread nosings · arrow — walking line, pointing UP · dashed — beams below the slab · <span style="color:#c0392b">red chain line</span> — design span (one-way strip) with its width · grey chain line — grid.</div>`;
+
+/** One plan, or one per group of stories when flights / landings of a higher story sit over a lower one (they would hide it). */
 export function planSvg(m: Model) {
+  const items = [...m.flights, ...m.landings],
+    story = (it: Flight | Landing) => ('n' in it ? flightStory(m, it) : landingStory(m, it)),
+    rect = (it: Flight | Landing) => ('n' in it ? frame(it).r : landingRect(it)),
+    hit = (a: Flight | Landing, b: Flight | Landing) => {
+      const p = rect(a),
+        q = rect(b);
+      return Math.min(p.x1, q.x1) - Math.max(p.x0, q.x0) > 1 && Math.min(p.y1, q.y1) - Math.max(p.y0, q.y0) > 1;
+    },
+    groups: Set<string>[] = [];
+  let cur: (Flight | Landing)[] = [];
+  for (const st of m.stories) {
+    const mine = items.filter((it) => story(it) === st.name);
+    if (!groups.length || mine.some((a) => cur.some((b) => hit(a, b)))) groups.push(new Set()), (cur = []);
+    groups[groups.length - 1].add(st.name);
+    cur.push(...mine);
+  }
+  const used = groups.filter((g) => items.some((it) => g.has(story(it))));
+  if (used.length < 2) return planSheet(m, () => true, 'Fig. 1 — Stair general arrangement plan') + LEGEND;
+  return (
+    used
+      .map((g, i) => {
+        const zs = items.filter((it) => g.has(story(it))).flatMap((it) => ('n' in it ? [it.z0, it.z0 + it.n * it.R] : [it.z]));
+        return planSheet(m, (st) => g.has(st), `Fig. 1${'abcdefgh'[i] ?? i + 1} — Stair general arrangement plan, levels ${lvl(Math.min(...zs))} to ${lvl(Math.max(...zs))}`);
+      })
+      .join('') + LEGEND
+  );
+}
+
+/** Frame and overall dimensions from the whole stair, so the plans of a split line up; draws only members on stories `show` accepts. */
+function planSheet(m: Model, show: (story: string) => boolean, title: string) {
   const pts: number[][] = [];
   for (const fl of m.flights) {
     const r = frame(fl).r;
@@ -132,6 +165,8 @@ export function planSvg(m: Model) {
   const near = (x1: number, y1: number, x2: number, y2: number) => Math.max(x1, x2) > bb0.x0 - 800 && Math.min(x1, x2) < bb0.x1 + 800 && Math.max(y1, y2) > bb0.y0 - 800 && Math.min(y1, y2) < bb0.y1 + 800;
   const beams = m.beams.filter((b) => near(b.x1, b.y1, b.x2, b.y2));
   for (const b of beams) pts.push([b.x1, b.y1], [b.x2, b.y2]);
+  const landings = m.landings.filter((l) => show(landingStory(m, l))),
+    flights = m.flights.filter((fl) => show(flightStory(m, fl)));
   const e = 900,
     bb = { x0: Math.min(...pts.map((p) => p[0])) - e, y0: Math.min(...pts.map((p) => p[1])) - e, x1: Math.max(...pts.map((p) => p[0])) + e, y1: Math.max(...pts.map((p) => p[1])) + e };
   const S = new Sheet(bb, 820, 640, 50);
@@ -153,6 +188,7 @@ export function planSvg(m: Model) {
   }
   // beams below the slab: hidden outline + centre line
   for (const b of beams) {
+    if (!show(b.story)) continue;
     const w = m.frameSections.find((s) => s.name === b.section)?.t2 || 300,
       L = Math.hypot(b.x2 - b.x1, b.y2 - b.y1) || 1,
       n = [(-(b.y2 - b.y1) / L) * (w / 2), ((b.x2 - b.x1) / L) * (w / 2)];
@@ -161,7 +197,7 @@ export function planSvg(m: Model) {
       rot = ang > 90 ? ang - 180 : ang < -90 ? ang + 180 : ang;
     S.text((b.x1 + b.x2) / 2 + n[0] * 1.8, (b.y1 + b.y2) / 2 + n[1] * 1.8, `${beamName(m, b)} ${b.section}`, { size: 9.5, rot, dy: 3, fill: '#333' });
   }
-  for (const l of m.landings) {
+  for (const l of landings) {
     const r = landingRect(l);
     S.rect(r.x0, r.y0, r.x1, r.y1, 'stroke="#000" stroke-width="1.6" fill="#f3f3f3"');
     // off the centre lines, where spans usually run
@@ -169,10 +205,10 @@ export function planSvg(m: Model) {
       ly = r.y0 + (r.y1 - r.y0) * 0.22;
     S.text(lx, ly, `${l.name}  LVL ${lvl(l.z)}`, { bold: true, size: 9.5, dy: -2 });
     S.text(lx, ly, `t = ${l.t}`, { size: 9, dy: 10 });
-    S.dim(r.x0, r.y0, r.x1, r.y0, -14, `${l.w}`);
-    S.dim(r.x1, r.y0, r.x1, r.y1, -14, `${l.h}`);
+    S.dim(r.x0, r.y0, r.x1, r.y0, -14, `${Math.round(l.w)}`);
+    S.dim(r.x1, r.y0, r.x1, r.y1, -14, `${Math.round(l.h)}`);
   }
-  for (const fl of m.flights) {
+  for (const fl of flights) {
     const F = frame(fl),
       r = F.r,
       at = (s: number, q: number) => [F.O[0] + F.u[0] * s + F.v[0] * q, F.O[1] + F.u[1] * s + F.v[1] * q];
@@ -197,10 +233,11 @@ export function planSvg(m: Model) {
       g1 = at(F.L, 0),
       w0 = at(0, 0),
       w1 = at(0, F.w);
-    S.dimOut(g0, g1, [-F.v[0], -F.v[1]], 14, `${F.L} (going)`);
-    S.dimOut(w0, w1, [-F.u[0], -F.u[1]], 14, `${F.w}`);
+    S.dimOut(g0, g1, [-F.v[0], -F.v[1]], 14, `${Math.round(F.L)} (going)`);
+    S.dimOut(w0, w1, [-F.u[0], -F.u[1]], 14, `${Math.round(F.w)}`);
   }
   for (const sp of m.spans) {
+    if (!show(sp.story)) continue;
     S.line(sp.x1, sp.y1, sp.x2, sp.y2, SPAN, 'marker-start="url(#arr)" marker-end="url(#arr)"');
     const ang = (Math.atan2(-(sp.y2 - sp.y1), sp.x2 - sp.x1) * 180) / Math.PI,
       rot = ang > 90 ? ang - 180 : ang < -90 ? ang + 180 : ang;
@@ -211,10 +248,7 @@ export function planSvg(m: Model) {
   S.dim(bb0.x0, bb0.y0, bb0.x0, bb0.y1, S.X(bb0.x0) - S.X(bb.x0) - 22, `${Math.round(bb0.y1 - bb0.y0)}`);
   // axes
   S.add(`<g transform="translate(${S.W - 60},${S.H - 20})" font-size="10"><line x1="0" y1="0" x2="30" y2="0" stroke="#000" marker-end="url(#arr)"/><line x1="0" y1="0" x2="0" y2="-30" stroke="#000" marker-end="url(#arr)"/><text x="34" y="4">X</text><text x="-3" y="-34">Y</text></g>`);
-  return (
-    S.svg('Fig. 1 — Stair general arrangement plan') +
-    `<div class="info legend"><b>Legend:</b> thick outline — flight / landing slab (landings shaded) · thin lines — tread nosings · arrow — walking line, pointing UP · dashed — beams below the slab · <span style="color:#c0392b">red chain line</span> — design span (one-way strip) with its width · grey chain line — grid.</div>`
-  );
+  return S.svg(title);
 }
 
 // ---------- flight elevation ----------

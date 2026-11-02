@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { emptyModel } from '../model/types';
 import { template } from './stair';
+import { planSvg } from './drawings';
 import { resultsHtml } from '../ui/StairPanel';
 
 describe('report drawings', () => {
@@ -13,5 +14,15 @@ describe('report drawings', () => {
       expect(figs).toBeGreaterThanOrEqual(1 + m.flights.length + 1 + 2 * m.spans.length);
       expect(h).not.toMatch(/NaN|undefined/);
     }
+  });
+  it('a landing stacked over a lower flight gets its own plan; an unstacked stair keeps one', () => {
+    const t = template(emptyModel(), 'dog', 'Story1', 'B300x500', 'C400x400');
+    expect(planSvg(t).match(/<svg /g)?.length).toBe(1);
+    const l = t.landings[0],
+      m = { ...t, stories: [...t.stories, { name: 'Up', height: 3000, isMaster: false, similarTo: '' }] };
+    m.landings = [...m.landings, { ...l, id: 'up', name: 'Lup', z: m.stories.reduce((a, s) => a + s.height, m.baseElevation) }];
+    const h = planSvg(m);
+    expect(h.match(/<svg /g)?.length).toBe(2);
+    expect(h).toContain('Fig. 1b');
   });
 });
