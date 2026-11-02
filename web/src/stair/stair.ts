@@ -348,6 +348,24 @@ function finish(m: Model, sp: Span, G: NonNullable<ReturnType<typeof spanGeom>>,
   return { ...G, tr, D, LL, U, t, des: design(m, U, t, L) };
 }
 
+/** The span's flights (or its landings, if it has none) set to waist `t`. */
+export function withWaist(m: Model, ids: Set<string>, t: number): Model {
+  const set = <T extends { id: string; t: number }>(xs: T[]) => xs.map((x) => (ids.has(x.id) ? { ...x, t } : x));
+  return { ...m, flights: set(m.flights), landings: set(m.landings) };
+}
+
+/** Thumb-rule waist L/20 (10 mm steps), raised until the span passes the deflection check with its own self weight. */
+export function suggestWaist(m: Model, sp: Span) {
+  const A = analyze(m, sp);
+  if (!A) return null;
+  const fl = A.segs.filter((s) => 'n' in s.it);
+  const ids = new Set((fl.length ? fl : A.segs).map((s) => s.it.id));
+  const thumb = Math.ceil(A.L * 5) * 10;
+  let t = Math.max(thumb, A.t + 10);
+  while (t < 600 && !analyze(withWaist(m, ids, t), sp)?.des.defl) t += 10;
+  return { thumb, t, ids };
+}
+
 // ---------- IS 456 design ----------
 
 const TC_PT = [0.15, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3];
@@ -407,6 +425,7 @@ function design(m: Model, U: { M: number; RA: number; RB: number }, D: number, L
 
 export interface BeamLoadRow {
   sp: Span;
+  e: 0 | 1; // which end of the span bears here
   a: number; // mm from the beam start
   b: number;
   dl: number;
@@ -430,7 +449,7 @@ export function beamLoads(m: Model) {
       if (s.mismatch) warn.push(`${sp.name}: ${e ? 'end' : 'start'} slab level ${s.zs!.toFixed(0)} vs beam ${beamName(m, s.beam)} level ${s.bz!.toFixed(0)} mm — check`);
       const a = clamp(s.s! - sp.width / 2, 0, s.bl!),
         b = clamp(s.s! + sp.width / 2, 0, s.bl!);
-      out.get(s.beam)!.push({ sp, a, b, dl: A.D[R], ll: A.LL[R], fu: A.U[R] });
+      out.get(s.beam)!.push({ sp, e: e as 0 | 1, a, b, dl: A.D[R], ll: A.LL[R], fu: A.U[R] });
     });
   }
   for (const f of m.flights) if (!m.spans.some((sp) => crosses(sp, f))) warn.push(`${f.name}: not covered by any span — its load is not reaching any beam`);
@@ -465,7 +484,8 @@ export function autoSpans(m: Model): Model {
         z = l.z;
       }
       let best: number | null = null,
-        bs = 1e12;
+        bs = 1e12,
+        dz = 0;
       for (const b of m.beams) {
         const d = [b.x2 - b.x1, b.y2 - b.y1],
           den = cross(u, d);
@@ -475,9 +495,15 @@ export function autoSpans(m: Model): Model {
           s = cross(ac, u) / den,
           tol = beamWidth(m, b) / 2 / Math.hypot(d[0], d[1]);
         if (s < -tol || s > 1 + tol || sg * (tb - (sg * F.L) / 2) < -300 || sg * (tb - t) > 400) continue;
-        const sc = Math.abs(beamZ(el, b, clamp(s, 0, 1) * Math.hypot(d[0], d[1])) - z) * 10 + Math.abs(tb - t);
-        if (sc < bs) (bs = sc), (best = tb);
+        const bz = Math.abs(beamZ(el, b, clamp(s, 0, 1) * Math.hypot(d[0], d[1])) - z),
+          sc = bz * 10 + Math.abs(tb - t);
+        if (sc < bs) (bs = sc), (best = tb), (dz = bz);
       }
+      // IS 456 cl 33.1(b): no beam at the landing's level ahead, so the flight bears on the landing slab
+      // spanning across it; take the span half the landing width (or 1 m, if less) past the flight end
+      const edge = (sg * F.L) / 2,
+        deep = sg * (t - edge);
+      if (deep > 0 && (best == null || dz > 300)) return edge + sg * Math.min(deep / 2, 1000);
       return best ?? t;
     };
     const a = pt(end(-1)),

@@ -2,11 +2,11 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 import { useApp, usePreview, visibleModel } from '../model/store';
 import { cachedStoryNodes, isNodeId, type PanelSize } from '../model/ops';
 import { fmt } from '../model/geom';
-import { columnOn, type Beam, type Landing, type Pt } from '../model/types';
+import { columnOn, type Beam, type Landing, type Pt, type Span } from '../model/types';
 import { viewport } from './viewport';
 import { UnderlayLayer, GridLayer, GridDimLayer, SlabLayer, BeamLayer, ColumnLayer, LabelLayer, LoadLayer, ColorLegend } from './layers';
 import { activePattern, useViewPatterns } from '../ui/LoadDialogs';
-import { onMove, onClick, onCancel, finishPolygon, picking, finishFramePick, hitTest, boxSelect, fillIntersections, doSnap, gripAt, gripMove, gripDrop, gripCancel, type Grip } from './tools';
+import { onMove, onClick, onCancel, finishPolygon, picking, finishFramePick, hitTest, boxSelect, fillIntersections, doSnap, gripAt, gripMove, gripDrop, gripCancel, midPicking, startMidPick, spanGrips, type Grip } from './tools';
 import { columnOutline } from './snap';
 import { useUnderlay, regionFor } from '../underlay/store';
 import { UnderlayCanvas } from './UnderlayCanvas';
@@ -259,12 +259,34 @@ export function PlanView() {
     onMove(p);
   };
 
-  const ctx = (e: React.MouseEvent) => {
-    e.preventDefault();
+  const endChain = () => {
     const t = useApp.getState().tool;
     if (t === 'slabDraw' || t === 'area') finishPolygon();
     else onCancel();
   };
+
+  // right-click in a draw tool opens a small menu; elsewhere (select, picks, mid pick) it cancels as before
+  const [menu, setMenu] = useState<Pt | null>(null);
+  const ctx = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (useApp.getState().tool !== 'select' && !picking() && !midPicking()) return setMenu(local(e));
+    endChain();
+  };
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const key = (e: KeyboardEvent) => e.key === 'Escape' && close();
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', key);
+    return () => (window.removeEventListener('pointerdown', close), window.removeEventListener('keydown', key));
+  }, [menu]);
+  const menuItem = (label: string, run: () => void) => (
+    <div className="menu-item" role="menuitem" onClick={() => (setMenu(null), run())}>
+      <span />
+      <span>{label}</span>
+      <span />
+    </div>
+  );
 
   const dblClick = () => {
     const t = useApp.getState().tool;
@@ -297,9 +319,16 @@ export function PlanView() {
         </g>
         <IssueLayer story={story} offset={setupRef} />
         {show.nodes && <NodeLayer story={story} sel={sel} offset={setupRef} />}
-        {tool === 'select' && <GripLayer beams={[...beams, ...model.grids]} landings={landings} sel={sel} offset={setupRef} />}
+        {tool === 'select' && <GripLayer beams={[...beams, ...model.grids]} landings={landings} spans={spans} sel={sel} offset={setupRef} />}
         <Overlay />
       </svg>
+      {menu && (
+        <div className="menu ctx-menu" role="menu" style={{ top: menu.y, left: menu.x }} onPointerDown={(e) => e.stopPropagation()} onPointerUp={(e) => e.stopPropagation()} onContextMenu={(e) => (e.preventDefault(), e.stopPropagation())}>
+          {menuItem('Mid between two points', startMidPick)}
+          <div className="menu-sep" role="separator" />
+          {menuItem(tool === 'slabDraw' || tool === 'area' ? 'Close polygon' : 'End / cancel', endChain)}
+        </div>
+      )}
       <Compass rot={viewRot} />
       <ColorLegend items={legendItems} colorBy={colorBy} patterns={viewPats} />
       {show.underlay && hasRegion && <div className="story-banner nosel">{story}</div>}
@@ -353,14 +382,15 @@ function IssueLayer({ story, offset }: { story: string; offset: Pt | null }) {
   );
 }
 
-/** End grips on selected beams and grids, corner grips on selected landings (screen space, fixed size). Drag one to reshape or extend it. */
-function GripLayer({ beams, landings, sel, offset }: { beams: Pick<Beam, 'id' | 'x1' | 'y1' | 'x2' | 'y2'>[]; landings: Landing[]; sel: Set<string>; offset: Pt | null }) {
+/** End grips on selected beams and grids, corner grips on selected landings, end and side-midpoint grips on selected spans (screen space, fixed size). Drag one to reshape or extend it. */
+function GripLayer({ beams, landings, spans, sel, offset }: { beams: Pick<Beam, 'id' | 'x1' | 'y1' | 'x2' | 'y2'>[]; landings: Landing[]; spans: Span[]; sel: Set<string>; offset: Pt | null }) {
   useVp();
   const ox = offset?.x ?? 0,
     oy = offset?.y ?? 0;
   const picked = [
     ...beams.filter((b) => sel.has(b.id)).map((b) => ({ id: b.id, pts: [{ x: b.x1, y: b.y1 }, { x: b.x2, y: b.y2 }] })),
     ...landings.filter((l) => sel.has(l.id)).map((l) => ({ id: l.id, pts: rectPts(landingRect(l)) })),
+    ...spans.filter((sp) => sel.has(sp.id)).map((sp) => ({ id: sp.id, pts: spanGrips(sp).map(([, q]) => q) })),
   ];
   if (picked.length > 200) return null;
   return (
@@ -444,6 +474,26 @@ function Overlay() {
       b = S({ x: colAlign.ref.x + dir.x * far, y: colAlign.ref.y + dir.y * far });
     items.push(<line key="algl" x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#ff9f43" strokeDasharray="10 5" strokeWidth={1} />);
     items.push(<circle key="algr" cx={r.x} cy={r.y} r={6} fill="none" stroke="#ff9f43" strokeWidth={2} />);
+  }
+  if (pv.mid) {
+    const c = '#ff9f43';
+    const pts = pv.mid.pts.map(S);
+    if (pts.length === 2) items.push(<line key="midab" x1={pts[0].x} y1={pts[0].y} x2={pts[1].x} y2={pts[1].y} stroke={c} strokeOpacity={0.6} strokeDasharray="4 3" />);
+    else if (pts.length === 1 && cur) {
+      const q = S(cur);
+      items.push(<line key="midab" x1={pts[0].x} y1={pts[0].y} x2={q.x} y2={q.y} stroke={c} strokeOpacity={0.6} strokeDasharray="4 3" />);
+    }
+    pts.forEach((p, i) => items.push(<circle key={'midp' + i} cx={p.x} cy={p.y} r={4} fill={c} />));
+    if (pv.mid.guide) {
+      const g = pv.mid.guide;
+      const far = 4000 / viewport.k; // same reach as the column align guide
+      const d = pv.mid.vertical === false ? { x: far, y: 0 } : { x: 0, y: far };
+      const a = S({ x: g.x - d.x, y: g.y - d.y }),
+        b = S({ x: g.x + d.x, y: g.y + d.y }),
+        m = S(g);
+      items.push(<line key="midgl" x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={c} strokeDasharray="10 5" strokeWidth={1} />);
+      items.push(<path key="midm" d={`M${m.x} ${m.y - 7}L${m.x + 7} ${m.y + 6}L${m.x - 7} ${m.y + 6}Z`} fill="none" stroke={c} strokeWidth={2} />);
+    }
   }
   if (pv.track && tool !== 'select') {
     const t = S(pv.track);

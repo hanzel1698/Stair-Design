@@ -1,5 +1,5 @@
 import { useApp, usePreview, drawStories, toast, visibleModel, type ToolName } from '../model/store';
-import type { Beam, Model, Pt } from '../model/types';
+import type { Beam, Model, Pt, Span } from '../model/types';
 import { logAutoSizes } from '../log/sessionLog';
 import { autoSizeBeams, noFitNote, RANK_NAME } from '../model/autoBeam';
 import { addBeams, addColumns, addSlab, cachedStoryNodes, findBay, gridSegs, makeGrid, moveIds, nextGridLabel, onGridLine, panelSize, setBeamEnd, setGridEnd, slabsUnderBeams, splitSlabsByBeams } from '../model/ops';
@@ -54,7 +54,22 @@ export function resetTool() {
   calibStage = 'dist';
   offsetSrc = null;
   const hint = redrawId && A().tool === 'region' ? `Redraw region (${useUnderlay.getState().regions.find((r) => r.id === redrawId)?.stories.join(', ')}): click two corners around its plan.` : hints[A().tool];
-  P().set({ rubber: [], rubberClosed: false, box: null, measure: null, panel: null, offsetLine: null, input: '', track: null, hint });
+  P().set({ rubber: [], rubberClosed: false, box: null, measure: null, panel: null, offsetLine: null, input: '', track: null, mid: null, hint });
+}
+
+// ---------- mid between two points ----------
+
+export const midPicking = () => !!P().mid;
+
+/** Pick two points; the next click then lands on a guide through their midpoint and goes to the active tool. */
+export function startMidPick() {
+  P().set({ mid: { pts: [], guide: null }, hint: 'Mid between two points: click the first point. Esc cancels.' });
+}
+
+/** Lock `q` to the midpoint guide: the vertical line when the mouse is above or below the midpoint, the horizontal one when it is to the side. */
+export function midLock(g: Pt, q: Pt) {
+  const vertical = Math.abs(q.y - g.y) >= Math.abs(q.x - g.x);
+  return { vertical, p: vertical ? { x: g.x, y: q.y } : { x: q.x, y: g.y } };
 }
 
 export function setTool(t: ToolName) {
@@ -181,9 +196,14 @@ function liveText(from: Pt, to: Pt) {
 }
 
 export function onMove(screen: Pt) {
-  const s = doSnap(screen);
+  let s = doSnap(screen);
   const t = A().tool;
   const p = P();
+  if (p.mid?.guide) {
+    const l = midLock(p.mid.guide, s.p);
+    s = { p: l.p, kind: 'align' };
+    if (l.vertical !== p.mid.vertical) p.set({ mid: { ...p.mid, vertical: l.vertical } });
+  }
   const upd: Partial<ReturnType<typeof P>> = { cursor: s.p, snap: s.kind === 'none' ? null : s };
   if (movePicking()) {
     const b = useMovePick.getState().base;
@@ -270,6 +290,16 @@ export function onClick(pt: Pt) {
   const commit = A().commit;
   if (DRAW_TOOLS.includes(t) && useUnderlay.getState().setupMode && useUnderlay.getState().kind === 'dxf')
     return toast('Untick “Show whole DXF (setup)” before drawing: the setup view uses raw DXF coordinates.');
+  if (p.mid) {
+    const { pts, guide } = p.mid;
+    if (!guide) {
+      const two = [...pts, pt];
+      if (two.length < 2) return p.set({ mid: { pts: two, guide: null }, hint: 'Mid between two points: click the second point.' });
+      return p.set({ mid: { pts: two, guide: { x: (two[0].x + two[1].x) / 2, y: (two[0].y + two[1].y) / 2 } }, hint: 'Locked to the midpoint guide (move up/down for vertical, sideways for horizontal): click to place the point.' });
+    }
+    pt = midLock(guide, pt).p;
+    p.set({ mid: null, hint: hints[t] });
+  }
   switch (t) {
     case 'grid': {
       if (!p.rubber.length) return p.set({ rubber: [pt] });
@@ -638,6 +668,7 @@ function clickMovePick(screen: Pt) {
 }
 
 export function onCancel() {
+  if (midPicking()) return P().set({ mid: null, hint: hints[A().tool] }); // keeps a beam chain in progress
   if (movePicking()) return endMovePick();
   if (picking()) return endFramePick();
   const p = P();
@@ -665,8 +696,26 @@ export function fillIntersections(a: Pt, b: Pt) {
 
 // ---------- beam and grid end grips (select tool) ----------
 
-/** A beam or grid end, or a landing corner (index into rectPts; the opposite corner stays put). */
-export type Grip = { id: string; end: 1 | 2 } | { id: string; corner: number };
+/** A beam, grid or span end, a landing corner (index into rectPts; the opposite corner stays put), or a span side midpoint (width, about the axis). */
+export type Grip = { id: string; end: 1 | 2 } | { id: string; corner: number } | { id: string; side: 1 | -1 };
+
+/** Span axis midpoint and unit normal. */
+function spanMid(sp: Span) {
+  const L = Math.hypot(sp.x2 - sp.x1, sp.y2 - sp.y1) || 1;
+  return { c: { x: (sp.x1 + sp.x2) / 2, y: (sp.y1 + sp.y2) / 2 }, n: { x: -(sp.y2 - sp.y1) / L, y: (sp.x2 - sp.x1) / L } };
+}
+
+/** A span's grips: its two ends (the end edge midpoints) and the midpoints of its two long sides. */
+export function spanGrips(sp: Span): [Grip, Pt][] {
+  const { c, n } = spanMid(sp),
+    h = sp.width / 2;
+  return [
+    [{ id: sp.id, end: 1 }, { x: sp.x1, y: sp.y1 }],
+    [{ id: sp.id, end: 2 }, { x: sp.x2, y: sp.y2 }],
+    [{ id: sp.id, side: 1 }, { x: c.x + n.x * h, y: c.y + n.y * h }],
+    [{ id: sp.id, side: -1 }, { x: c.x - n.x * h, y: c.y - n.y * h }],
+  ];
+}
 
 /** The end grip of a selected beam (active story) or grid, or the corner grip of a selected landing (active story), under the cursor, if any. */
 export function gripAt(screen: Pt): Grip | null {
@@ -694,6 +743,12 @@ export function gripAt(screen: Pt): Grip | null {
         const d = dist(w, q);
         if (d < bd) (bd = d), (best = { id: l.id, corner });
       });
+  for (const sp of model.spans)
+    if (s.has(sp.id) && sp.story === activeStory)
+      for (const [g, q] of spanGrips(sp)) {
+        const d = dist(w, q);
+        if (d < bd) (bd = d), (best = g);
+      }
   return best;
 }
 
@@ -707,9 +762,18 @@ function gripSnap(g: Grip, screen: Pt): { s: Snap; fixed: Pt; p: Pt } | null {
     const s = snapPoint({ ...m, landings: m.landings.filter((x) => x.id !== g.id) }, viewport.toWorld(screen), SNAP_PX / viewport.k, { story: A().activeStory, from: fixed, ortho: false, underlay: A().show.underlay });
     return { s, fixed, p: s.p };
   }
+  if ('side' in g) {
+    const sp = m.spans.find((x) => x.id === g.id);
+    if (!sp) return null;
+    const { c, n } = spanMid(sp);
+    const s = snapPoint(m, viewport.toWorld(screen), SNAP_PX / viewport.k, { story: A().activeStory, from: c, ortho: false, underlay: A().show.underlay });
+    // width stays centred on the axis: both sides move by the cursor's distance from it
+    const d = Math.abs((s.p.x - c.x) * n.x + (s.p.y - c.y) * n.y);
+    return { s, fixed: { x: c.x - n.x * d, y: c.y - n.y * d }, p: { x: c.x + n.x * d, y: c.y + n.y * d } };
+  }
   const b = m.beams.find((x) => x.id === g.id);
   const gr = b ? undefined : m.grids.find((x) => x.id === g.id);
-  const e = b ?? gr;
+  const e = b ?? gr ?? m.spans.find((x) => x.id === g.id);
   if (!e) return null;
   const fixed = g.end === 1 ? { x: e.x2, y: e.y2 } : { x: e.x1, y: e.y1 };
   const s = snapPoint({ ...m, beams: m.beams.filter((x) => x.id !== g.id), grids: m.grids.filter((x) => x.id !== g.id) }, viewport.toWorld(screen), SNAP_PX / viewport.k, {
@@ -736,7 +800,13 @@ export function gripDrop(g: Grip, screen: Pt) {
     if (Math.abs(b.x - a.x) < 100 || Math.abs(b.y - a.y) < 100) return toast('Landing is too small.');
     return A().commit((m) => ({ ...m, landings: m.landings.map((l) => (l.id === g.id ? { ...l, x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) } : l)) }));
   }
+  const editSpan = (f: (x: Span) => Partial<Span>) => A().commit((m) => ({ ...m, spans: m.spans.map((x) => (x.id === g.id ? { ...x, ...f(x), auto: false } : x)) }));
+  if ('side' in g) {
+    const w = Math.round(dist(r.fixed, r.p));
+    return w < 100 ? toast('Span is too narrow.') : editSpan(() => ({ width: w }));
+  }
   if (dist(r.fixed, r.p) < 1) return toast('An element needs two different end points.');
+  if (A().model.spans.some((x) => x.id === g.id)) return editSpan(() => (g.end === 1 ? { x1: r.p.x, y1: r.p.y } : { x2: r.p.x, y2: r.p.y }));
   if (A().model.grids.some((x) => x.id === g.id)) return A().commit((m) => setGridEnd(m, g.id, g.end, r.p));
   commitBeams((m) => setBeamEnd(m, g.id, g.end, r.p));
 }

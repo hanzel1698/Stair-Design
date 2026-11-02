@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { useApp, sectionColor, visibleModel } from '../model/store';
 import { beamEndsZ, columnOn, columnSpan, levelZ, storyElevations, type Column, type FrameLoad, type LoadDir, type Model } from '../model/types';
-import { flightStory, frame as flightFrame, landingStory, profile } from '../stair/stair';
+import { beamLoads, flightStory, frame as flightFrame, landingStory, profile, type BeamLoadRow } from '../stair/stair';
 import { pointInPoly } from '../model/geom';
 import { describeJointLoad, shortFrameLoad } from '../model/loads';
 import { makeLoadFilter, type LoadFilter } from '../model/loadFilter';
@@ -14,13 +14,16 @@ import SectionSlider, { type Mark } from './SectionSlider';
 const S = 0.001; // mm → m in the scene
 const OPEN = 1e9; // clip-plane constant that clips nothing
 const LOAD_COLOR = '#ff9f43'; // --load, as in the plan
+const STAIR_DL_COLOR = '#ff6b6b';
+const STAIR_LL_COLOR = '#4dabf7';
 
-export type LabelKind = 'column' | 'beam' | 'slab' | 'load';
+export type LabelKind = 'column' | 'beam' | 'slab' | 'load' | 'stair';
 const LABEL_KINDS: { kind: LabelKind; name: string }[] = [
   { kind: 'column', name: 'Columns' },
   { kind: 'beam', name: 'Beams' },
   { kind: 'slab', name: 'Slabs' },
   { kind: 'load', name: 'Loads' },
+  { kind: 'stair', name: 'Stair loads' },
 ];
 
 const LABEL_PX = 14; // label height on screen at the orbit target, as of the last Fit
@@ -195,12 +198,47 @@ function buildWire(m: Model, sel: Set<string>, onlyStory: string | null, clip: T
     g.add(label(named(j.pattern, `↓ ${describeJointLoad(j.f)}`), LOAD_COLOR, new THREE.Vector3(j.x * S, z * S, -j.y * S), null, false));
   }
   if (loads) g.add(...buildLoadPlots(m, lf, vis, colVis, clip));
+  if (labels.has('stair')) stairLoads(g, m, el, vis, clip, (labels.has('beam') ? 1 : 0) + (labels.has('load') ? 1 : 0));
   const ghost = (key: string, color: string) => {
     if (!fills.has(key)) fills.set(key, new THREE.MeshBasicMaterial({ color: new THREE.Color(color), transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide, clippingPlanes: clip }));
     return fills.get(key)!;
   };
   stairMeshes(m, sel, vis, ghost, ghost('__selStair', '#39ff9a')).forEach((x) => g.add(x));
   return g;
+}
+
+// The stair's reactions as the beams receive them (Stair Dead, Stair Live: unfactored kN/m), each plotted over
+// the stretch of beam it acts on, Live stacked on Dead (the blue band above the red is Live; its top is D + L),
+// and tagged with its value and extent from the beam start.
+function stairLoads(g: THREE.Group, m: Model, el: ReturnType<typeof storyElevations>, vis: (story: string) => boolean, clip: THREE.Plane[], tagsAbove: number) {
+  const { out } = beamLoads(m);
+  const peak = Math.max(0, ...[...out.values()].flat().map((r) => r.dl + r.ll));
+  if (!peak) return;
+  const all: LoadFilter = { frame: () => true, slab: () => true, joint: () => true, named: false };
+  const only = (pattern: string, v: (r: BeamLoadRow) => number): Model => ({
+    ...m,
+    columns: [],
+    slabs: [],
+    jointLoads: [],
+    beams: m.beams.map((b) => ({ ...b, loads: (out.get(b) ?? []).map((r): FrameLoad => ({ pattern, kind: 'dist', force: 'F', dir: 'Gravity', rel: false, d1: r.a, d2: r.b, v1: v(r), v2: v(r) })) })),
+  });
+  g.add(...buildLoadPlots(only('Stair Live', (r) => r.dl + r.ll), all, vis, () => false, clip, STAIR_LL_COLOR, peak));
+  g.add(...buildLoadPlots(only('Stair Dead', (r) => r.dl), all, vis, () => false, clip, STAIR_DL_COLOR, peak));
+  const m3 = (x: number) => (x / 1000).toFixed(2);
+  for (const [b, rows] of out) {
+    const ze = beamEndsZ(el, b);
+    if (ze === null || !vis(b.story)) continue;
+    const a = new THREE.Vector3(b.x1 * S, ze[0] * S, -b.y1 * S),
+      e = new THREE.Vector3(b.x2 * S, ze[1] * S, -b.y2 * S),
+      L = a.distanceTo(e) / S,
+      ax = e.clone().sub(a);
+    for (const r of rows) {
+      const at = a.clone().lerp(e, L ? (r.a + r.b) / 2 / L : 0.5),
+        ext = `${m3(r.a)}–${m3(r.b)} m`;
+      g.add(label(`SD ${r.dl.toFixed(2)} kN/m · ${ext}`, STAIR_DL_COLOR, at, ax.clone(), false, -1.15 * tagsAbove));
+      g.add(label(`SL ${r.ll.toFixed(2)} kN/m · ${ext}`, STAIR_LL_COLOR, at, ax.clone(), false, -1.15 * (tagsAbove + 1)));
+    }
+  }
 }
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -239,7 +277,7 @@ function frameAxes(a: THREE.Vector3, b: THREE.Vector3, angle: number | null): TH
 // load's plot filled between the member and its arrow tails, so where it acts and how it varies reads at a
 // glance. Each kind (frame distributed, frame point, slab, joint force, joint moment) is scaled on its own,
 // its largest value drawn `H` long. Moments are arrows with a double head (right-hand rule).
-function buildLoadPlots(m: Model, lf: LoadFilter, vis: (story: string) => boolean, colVis: (c: Column) => boolean, clip: THREE.Plane[]): THREE.Object3D[] {
+function buildLoadPlots(m: Model, lf: LoadFilter, vis: (story: string) => boolean, colVis: (c: Column) => boolean, clip: THREE.Plane[], color0 = LOAD_COLOR, distPeak?: number): THREE.Object3D[] {
   const el = storyElevations(m);
   const P = (x: number, y: number, z: number) => new THREE.Vector3(x * S, z * S, -y * S);
   const frames: { a: THREE.Vector3; b: THREE.Vector3; ax: THREE.Vector3[]; ls: FrameLoad[] }[] = [];
@@ -279,7 +317,7 @@ function buildLoadPlots(m: Model, lf: LoadFilter, vis: (story: string) => boolea
     const mx = Math.max(0, ...vs.map(Math.abs));
     return mx > 0 ? H / mx : 0;
   };
-  const kDist = scale(frames.flatMap((f) => f.ls.filter((l) => l.kind === 'dist').flatMap((l) => [l.v1, l.v2])));
+  const kDist = distPeak ? H / distPeak : scale(frames.flatMap((f) => f.ls.filter((l) => l.kind === 'dist').flatMap((l) => [l.v1, l.v2])));
   const kPoint = scale(frames.flatMap((f) => f.ls.filter((l) => l.kind === 'point').map((l) => l.v1)));
   const kSlab = scale(slabs.flatMap((s) => s.ls.map((l) => l.value))) * 0.5; // lower than the frame plots, so they stay readable over a loaded slab
   const kJf = scale(joints.flatMap((j) => j.f.slice(0, 3)));
@@ -376,7 +414,7 @@ function buildLoadPlots(m: Model, lf: LoadFilter, vis: (story: string) => boolea
     });
 
   const out: THREE.Object3D[] = [];
-  const color = new THREE.Color(LOAD_COLOR);
+  const color = new THREE.Color(color0);
   if (segs.length) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(segs, 3));
@@ -830,7 +868,7 @@ export default function View3D() {
           <span className="label-picks" title="Show section names">
             Names:
             {LABEL_KINDS.map(({ kind, name }) => (
-              <button key={kind} className={labels.has(kind) ? 'on' : ''} title={kind === 'load' ? 'Show loads as arrows and plots; filter them in the right panel' : undefined} onClick={() => toggleLabel(kind)}>
+              <button key={kind} className={labels.has(kind) ? 'on' : ''} title={kind === 'load' ? 'Show loads as arrows and plots; filter them in the right panel' : kind === 'stair' ? 'Show the Stair Dead (red) and Stair Live (blue) line loads the stair puts on each beam, over the length they act on' : undefined} onClick={() => toggleLabel(kind)}>
                 {name}
               </button>
             ))}

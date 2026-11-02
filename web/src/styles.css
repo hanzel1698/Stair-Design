@@ -1254,3 +1254,14 @@ table.grid tr.group-row td {
 .stair-form{display:grid;grid-template-columns:1fr;gap:3px}
 .stair-form label{display:grid;grid-template-columns:1fr 96px;align-items:center;gap:6px;font-size:12px}
 .stair-form input,.stair-form select{width:100%}
+
+/* plan right-click menu: positioned at the cursor, highlights on hover (no keyboard nav) */
+.ctx-menu {
+  z-index: 20;
+}
+.ctx-menu .menu-item:hover {
+  background: #1f3b5a;
+  color: #fff;
+}
+.report figure.dwg{margin:10px 0}
+.report figure.dwg figcaption{font-size:11px;color:var(--muted);margin-top:3px}
