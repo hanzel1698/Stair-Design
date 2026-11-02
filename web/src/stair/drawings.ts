@@ -167,7 +167,8 @@ function planSheet(m: Model, show: (story: string) => boolean, title: string) {
   for (const b of beams) pts.push([b.x1, b.y1], [b.x2, b.y2]);
   const landings = m.landings.filter((l) => show(landingStory(m, l))),
     flights = m.flights.filter((fl) => show(flightStory(m, fl)));
-  const e = 900,
+  // margin outside the stair: slab dims 14 px, beam labels 34 px, overall dims 56 px, grid bubbles beyond
+  const e = 1400,
     bb = { x0: Math.min(...pts.map((p) => p[0])) - e, y0: Math.min(...pts.map((p) => p[1])) - e, x1: Math.max(...pts.map((p) => p[0])) + e, y1: Math.max(...pts.map((p) => p[1])) + e };
   const S = new Sheet(bb, 820, 640, 50);
   // grids: chain lines with bubbles at the bottom / left
@@ -195,7 +196,12 @@ function planSheet(m: Model, show: (story: string) => boolean, title: string) {
     S.poly([[b.x1 + n[0], b.y1 + n[1]], [b.x2 + n[0], b.y2 + n[1]], [b.x2 - n[0], b.y2 - n[1]], [b.x1 - n[0], b.y1 - n[1]]], HID);
     const ang = (Math.atan2(-(b.y2 - b.y1), b.x2 - b.x1) * 180) / Math.PI,
       rot = ang > 90 ? ang - 180 : ang < -90 ? ang + 180 : ang;
-    S.text((b.x1 + b.x2) / 2 + n[0] * 1.8, (b.y1 + b.y2) / 2 + n[1] * 1.8, `${beamName(m, b)} ${b.section}`, { size: 9.5, rot, dy: 3, fill: '#333' });
+    // on the side away from the stair, 34 px out: clear of the slab edge dimensions (14 px) and inside the overall ones
+    const mx = (b.x1 + b.x2) / 2,
+      my = (b.y1 + b.y2) / 2,
+      side = Math.sign((mx - (bb0.x0 + bb0.x1) / 2) * n[0] + (my - (bb0.y0 + bb0.y1) / 2) * n[1]) || 1,
+      k = (side * 34) / (S.X(1) - S.X(0)) / (w / 2);
+    S.text(mx + n[0] * k, my + n[1] * k, `${beamName(m, b)} ${b.section}`, { size: 9.5, rot, dy: 3, fill: '#333' });
   }
   for (const l of landings) {
     const r = landingRect(l);
@@ -223,18 +229,32 @@ function planSheet(m: Model, show: (story: string) => boolean, title: string) {
     S.line(p0[0], p0[1], p1[0], p1[1], 'stroke="#000" stroke-width="0.9"', 'marker-end="url(#arr)"');
     S.add(`<circle cx="${S.X(p0[0]).toFixed(1)}" cy="${S.Y(p0[1]).toFixed(1)}" r="2.5" fill="#000"/>`);
     const ax = F.u[0] !== 0,
-      rot = ax ? 0 : -90;
-    const c = at(F.L / 2, F.w * 0.75),
-      c2 = at(F.L / 2, F.w * 0.25);
-    S.text(c[0], c[1], `${fl.name} UP`, { bold: true, rot, dy: ax ? 4 : 0, dx: ax ? 0 : 4 });
-    S.text(c2[0], c2[1], `${fl.n}R @ ${fl.R} · ${fl.n - 1}T @ ${fl.T}`, { size: 9.5, rot, dy: ax ? 4 : 0, dx: ax ? 0 : 4 });
-    // going along the outer edge, width at the top end
+      note = `${fl.n}R @ ${fl.R} · ${fl.n - 1}T @ ${fl.T}`;
+    if (F.L * (S.X(1) - S.X(0)) >= note.length * 5.5) {
+      const rot = ax ? 0 : -90,
+        c = at(F.L / 2, F.w * 0.75),
+        c2 = at(F.L / 2, F.w * 0.25);
+      S.text(c[0], c[1], `${fl.name} UP`, { bold: true, rot, dy: ax ? 4 : 0, dx: ax ? 0 : 4 });
+      S.text(c2[0], c2[1], note, { size: 9.5, rot, dy: ax ? 4 : 0, dx: ax ? 0 : 4 });
+    } else {
+      // short going: three short lines across the width, beside the walking line
+      const rot = ax ? -90 : 0,
+        // title first in reading order: top line, or leftmost when the text is turned
+        cs = [0.2, 0.5, 0.8].map((k) => at(F.L * k, F.w * 0.76)).sort((a, b) => (ax ? S.X(a[0]) - S.X(b[0]) : S.Y(a[1]) - S.Y(b[1])));
+      [`${fl.name} UP`, `${fl.n}R @ ${fl.R}`, `${fl.n - 1}T @ ${fl.T}`].forEach((s, i) => S.text(cs[i][0], cs[i][1], s, { bold: !i, size: i ? 9.5 : 11, rot, dy: ax ? 0 : 4, dx: ax ? 4 : 0 }));
+    }
+    // going along the outer edge; width at the start, unless a landing there (or at the top) already gives it
     const g0 = at(0, 0),
       g1 = at(F.L, 0),
       w0 = at(0, 0),
-      w1 = at(0, F.w);
+      w1 = at(0, F.w),
+      corner = (l: Landing, p: number[]) => {
+        const q = landingRect(l);
+        return (Math.abs(p[0] - q.x0) < 1 || Math.abs(p[0] - q.x1) < 1) && (Math.abs(p[1] - q.y0) < 1 || Math.abs(p[1] - q.y1) < 1);
+      },
+      shown = landings.some((l) => (corner(l, w0) && corner(l, w1)) || (corner(l, at(F.L, 0)) && corner(l, at(F.L, F.w))));
     S.dimOut(g0, g1, [-F.v[0], -F.v[1]], 14, `${Math.round(F.L)} (going)`);
-    S.dimOut(w0, w1, [-F.u[0], -F.u[1]], 14, `${Math.round(F.w)}`);
+    if (!shown) S.dimOut(w0, w1, [-F.u[0], -F.u[1]], 14, `${Math.round(F.w)}`);
   }
   for (const sp of m.spans) {
     if (!show(sp.story)) continue;
@@ -244,8 +264,8 @@ function planSheet(m: Model, show: (story: string) => boolean, title: string) {
     S.text(sp.x1 * 0.6 + sp.x2 * 0.4, sp.y1 * 0.6 + sp.y2 * 0.4, `${sp.name} (strip ${sp.width})`, { size: 10, rot, dy: -5, fill: '#c0392b', bold: true });
   }
   // overall dimensions
-  S.dim(bb0.x0, bb0.y0, bb0.x1, bb0.y0, -(S.Y(bb.y0) - S.Y(bb0.y0) - 22), `${Math.round(bb0.x1 - bb0.x0)}`);
-  S.dim(bb0.x0, bb0.y0, bb0.x0, bb0.y1, S.X(bb0.x0) - S.X(bb.x0) - 22, `${Math.round(bb0.y1 - bb0.y0)}`);
+  S.dim(bb0.x0, bb0.y0, bb0.x1, bb0.y0, -(S.Y(Math.min(...pts.map((p) => p[1]))) - S.Y(bb0.y0) + 56), `${Math.round(bb0.x1 - bb0.x0)}`);
+  S.dim(bb0.x0, bb0.y0, bb0.x0, bb0.y1, S.X(bb0.x0) - S.X(Math.min(...pts.map((p) => p[0]))) + 56, `${Math.round(bb0.y1 - bb0.y0)}`);
   // axes
   S.add(`<g transform="translate(${S.W - 60},${S.H - 20})" font-size="10"><line x1="0" y1="0" x2="30" y2="0" stroke="#000" marker-end="url(#arr)"/><line x1="0" y1="0" x2="0" y2="-30" stroke="#000" marker-end="url(#arr)"/><text x="34" y="4">X</text><text x="-3" y="-34">Y</text></g>`);
   return S.svg(title);
