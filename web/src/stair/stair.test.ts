@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emptyModel } from '../model/types';
+import { emptyModel, type Model } from '../model/types';
 import { analyze, autoSpans, beamLoads, beamName, kSlab, ssBeam, suggestWaist, tauC, template, withWaist } from './stair';
 
 describe('stair statics and IS 456 tables', () => {
@@ -87,5 +87,11 @@ describe('beam loads', () => {
     const shuffled = { ...m, beams: [...m.beams].reverse() };
     const names = [...beamLoads(shuffled).out.keys()].map((b) => beamName(shuffled, b));
     expect(names).toEqual(names.map((_, i) => `B${i + 1}`));
+  });
+  it('measures loads from the left end, whichever way the beam was drawn', () => {
+    const m = template(emptyModel(), 'dog', 'Story1', 'B300x500', 'C400x400');
+    const rev = { ...m, beams: m.beams.map((b) => ({ ...b, x1: b.x2, y1: b.y2, x2: b.x1, y2: b.y1 })) };
+    const ab = (x: Model) => [...beamLoads(x).out.values()].map((rs) => rs.map((r) => [r.a, r.b]));
+    expect(ab(rev)).toEqual(ab(m));
   });
 });

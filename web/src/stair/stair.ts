@@ -452,6 +452,11 @@ export interface BeamLoadRow {
   fu: number;
 }
 
+/** Beam loads run from the beam's left end (bottom end if vertical), whichever way it was drawn. */
+export const beamFlipped = (b: Beam) => (Math.abs(b.x2 - b.x1) < 1 ? b.y2 < b.y1 : b.x2 < b.x1);
+/** The beam's report start point, mm. */
+export const beamStart = (b: Beam) => (beamFlipped(b) ? { x: b.x2, y: b.y2 } : { x: b.x1, y: b.y1 });
+
 export function beamLoads(m: Model) {
   const byName = [...m.beams].sort((a, b) => +beamName(m, a).slice(1) - +beamName(m, b).slice(1));
   const out = new Map<Beam, BeamLoadRow[]>(byName.map((b) => [b, []])),
@@ -467,8 +472,9 @@ export function beamLoads(m: Model) {
         return;
       }
       if (s.mismatch) warn.push(`${sp.name}: ${e ? 'end' : 'start'} slab level ${s.zs!.toFixed(0)} vs beam ${beamName(m, s.beam)} level ${s.bz!.toFixed(0)} mm — check`);
-      const a = clamp(s.s! - sp.width / 2, 0, s.bl!),
-        b = clamp(s.s! + sp.width / 2, 0, s.bl!);
+      const at = beamFlipped(s.beam) ? s.bl! - s.s! : s.s!,
+        a = clamp(at - sp.width / 2, 0, s.bl!),
+        b = clamp(at + sp.width / 2, 0, s.bl!);
       out.get(s.beam)!.push({ sp, e: e as 0 | 1, a, b, dl: A.D[R], ll: A.LL[R], fu: A.U[R] });
     });
   }

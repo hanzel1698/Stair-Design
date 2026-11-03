@@ -2,7 +2,7 @@ import { shows, toast, useApp } from '../model/store';
 import { startMovePick } from '../plan/tools';
 import { beamEndsZ, placeAt, storyElevations, withDz, type Beam, type Flight, type Landing, type Model, type Span, type StairParams } from '../model/types';
 import { Modal } from './Dialogs';
-import { analyze, beamLoads, beamName, frame, gridRef, suggestWaist, withWaist, type Transfer } from '../stair/stair';
+import { analyze, beamFlipped, beamLoads, beamName, frame, gridRef, suggestWaist, withWaist, type Transfer } from '../stair/stair';
 import { beamLoadSvg, flightSvg, planSvg, spanLoadSvg, spanSectionSvg, unitWeightsHtml } from '../stair/drawings';
 
 type Field<T> = [keyof T & string, string, ('text' | 'num' | string[])?];
@@ -176,7 +176,8 @@ const f2 = (v: number, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '—');
 const okS = (b: boolean) => (b ? '<span class="ok">OK</span>' : '<span class="ng">NOT OK</span>');
 
 function beamTag(m: Model, b: Beam) {
-  const z = beamEndsZ(storyElevations(m), b)!;
+  const z = [...beamEndsZ(storyElevations(m), b)!];
+  if (beamFlipped(b)) z.reverse();
   return `${beamName(m, b)} ${b.section}`.trim() + (Math.abs(z[1] - z[0]) > 1 ? ` (+${z[0].toFixed(0)} → +${z[1].toFixed(0)})` : ` (+${z[0].toFixed(0)})`);
 }
 
@@ -386,7 +387,7 @@ export function resultsHtml(m: Model, act = false) {
   if (m.flights.length) h += '<h2>Flight elevations</h2>' + m.flights.map((f) => flightSvg(f, fig.n++)).join('');
   h += unitWeightsHtml(m, fig);
   h += `<h2>Stair loads on beams</h2>
-<div class="info">Unfactored line loads (kN/m) to apply as uniform distributed loads on each beam, in two load cases: <b>Stair Dead</b> (waist / landing self weight + steps + finishes) and <b>Stair Live</b>. Distances in m from the beam start (X1, Y1). A cranked beam is listed piece by piece.</div>
+<div class="info">Unfactored line loads (kN/m) to apply as uniform distributed loads on each beam, in two load cases: <b>Stair Dead</b> (waist / landing self weight + steps + finishes) and <b>Stair Live</b>. Distances in m from the beam's left end (bottom end for a vertical beam). A cranked beam is listed piece by piece.</div>
 <table><tr><th>Beam</th><th>Grid</th><th>Length (m)</th><th>From span</th><th>Start (m)</th><th>End (m)</th><th>Dead (kN/m)</th><th>Live (kN/m)</th><th>Factored (kN/m)</th></tr>`;
   for (const [b, rows] of out) {
     const L = Math.hypot(b.x2 - b.x1, b.y2 - b.y1) / 1000;

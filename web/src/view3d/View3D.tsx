@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { useApp, sectionColor, visibleModel } from '../model/store';
 import { beamEndsZ, columnOn, columnSpan, levelZ, storyElevations, type Column, type FrameLoad, type LoadDir, type Model } from '../model/types';
-import { beamLoads, flightStory, frame as flightFrame, landingStory, profile, type BeamLoadRow } from '../stair/stair';
+import { beamFlipped, beamLoads, flightStory, frame as flightFrame, landingStory, profile, type BeamLoadRow } from '../stair/stair';
 import { pointInPoly } from '../model/geom';
 import { describeJointLoad, shortFrameLoad } from '../model/loads';
 import { makeLoadFilter, type LoadFilter } from '../model/loadFilter';
@@ -220,7 +220,12 @@ function stairLoads(g: THREE.Group, m: Model, el: ReturnType<typeof storyElevati
     columns: [],
     slabs: [],
     jointLoads: [],
-    beams: m.beams.map((b) => ({ ...b, loads: (out.get(b) ?? []).map((r): FrameLoad => ({ pattern, kind: 'dist', force: 'F', dir: 'Gravity', rel: false, d1: r.a, d2: r.b, v1: v(r), v2: v(r) })) })),
+    beams: m.beams.map((b) => {
+      // rows run from the beam's left end; frame loads from (x1, y1)
+      const L = Math.hypot(b.x2 - b.x1, b.y2 - b.y1),
+        f = beamFlipped(b);
+      return { ...b, loads: (out.get(b) ?? []).map((r): FrameLoad => ({ pattern, kind: 'dist', force: 'F', dir: 'Gravity', rel: false, d1: f ? L - r.b : r.a, d2: f ? L - r.a : r.b, v1: v(r), v2: v(r) })) };
+    }),
   });
   g.add(...buildLoadPlots(only('Stair Live', (r) => r.dl + r.ll), all, vis, () => false, clip, STAIR_LL_COLOR, peak));
   g.add(...buildLoadPlots(only('Stair Dead', (r) => r.dl), all, vis, () => false, clip, STAIR_DL_COLOR, peak));
@@ -233,7 +238,8 @@ function stairLoads(g: THREE.Group, m: Model, el: ReturnType<typeof storyElevati
       L = a.distanceTo(e) / S,
       ax = e.clone().sub(a);
     for (const r of rows) {
-      const at = a.clone().lerp(e, L ? (r.a + r.b) / 2 / L : 0.5),
+      const t = L ? (r.a + r.b) / 2 / L : 0.5,
+        at = a.clone().lerp(e, beamFlipped(b) ? 1 - t : t),
         ext = `${m3(r.a)}–${m3(r.b)} m`;
       g.add(label(`SD ${r.dl.toFixed(2)} kN/m · ${ext}`, STAIR_DL_COLOR, at, ax.clone(), false, -1.15 * tagsAbove));
       g.add(label(`SL ${r.ll.toFixed(2)} kN/m · ${ext}`, STAIR_LL_COLOR, at, ax.clone(), false, -1.15 * (tagsAbove + 1)));

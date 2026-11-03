@@ -1,5 +1,5 @@
 import type { Beam, Flight, Landing, Model, Span } from '../model/types';
-import { analyze, beamName, flightStory, frame, landingRect, landingStory, profile, slabLoads, type BeamLoadRow } from './stair';
+import { analyze, beamName, beamStart, flightStory, frame, landingRect, landingStory, profile, slabLoads, type BeamLoadRow } from './stair';
 
 // Report drawings as SVG strings: black linework on white "paper", world units mm, z / y up.
 
@@ -625,8 +625,9 @@ export function beamLoadSvg(m: Model, b: Beam, rows: BeamLoadRow[], no: number) 
     X = (x: number) => pad + x * sx,
     qmax = Math.max(...rows.map((r) => r.dl + r.ll), 1e-6),
     qs = 80 / qmax,
-    yb = 140;
-  let o = `<text x="${W / 2}" y="20" font-size="11" font-weight="600" text-anchor="middle">Stair Dead (hatched) + Stair Live (blue), unfactored kN/m — x from the beam start (${f(b.x1 / 1000)}, ${f(b.y1 / 1000)})</text>`;
+    yb = 140,
+    S = beamStart(b);
+  let o = `<text x="${W / 2}" y="20" font-size="11" font-weight="600" text-anchor="middle">Stair Dead (hatched) + Stair Live (blue), unfactored kN/m — x from the beam start (${f(S.x / 1000)}, ${f(S.y / 1000)})</text>`;
   // overlapping rows stack, as the loads add up on the beam
   const stack: { a: number; b: number; top: number }[] = [];
   for (const r of rows) {
