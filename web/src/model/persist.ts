@@ -3,12 +3,24 @@ import { useApp } from './store';
 import { emptyModel, type Model } from './types';
 import { log } from '../log/sessionLog';
 import { applySavedMeta, metaOf, useUnderlay } from '../underlay/store';
+import { renumber, spanKey } from '../stair/stair';
 
 const KEY = 'stair-model';
 
+/** Saved model over the defaults, minus spans left on a story that was deleted (older files kept them). */
+export function loaded(saved: Partial<Model>): Model {
+  const m = { ...emptyModel(), ...saved };
+  const names = new Set(m.stories.map((s) => s.name));
+  const spans = m.spans.filter((sp) => names.has(sp.story));
+  if (spans.length === m.spans.length) return m;
+  log('file', `Dropped ${m.spans.length - spans.length} span(s) on deleted stories`);
+  const n = { ...m, spans };
+  return { ...n, spans: renumber(spans, 'S', (sp) => spanKey(n, sp)) };
+}
+
 export async function restoreModel() {
   const m = (await idbGet(KEY)) as Model | undefined;
-  if (m && Array.isArray(m.stories)) useApp.getState().setModel({ ...emptyModel(), ...m });
+  if (m && Array.isArray(m.stories)) useApp.getState().setModel(loaded(m));
 }
 
 let t = 0;
@@ -34,7 +46,7 @@ export function downloadProject() {
 export async function openProject(file: File) {
   const j = JSON.parse(await file.text());
   if (!j.model) throw new Error('Not a Stair Design project');
-  useApp.getState().setModel({ ...emptyModel(), ...j.model });
+  useApp.getState().setModel(loaded(j.model));
   // keep the loaded underlay file, apply saved scale/placement only if it is the same file
   if (j.underlay) applySavedMeta(j.underlay);
 }

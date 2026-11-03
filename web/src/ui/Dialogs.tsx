@@ -468,6 +468,7 @@ function StoriesDialog() {
         columns: fix(m.columns.map(span)),
         beams: fix(m.beams),
         slabs: fix(m.slabs),
+        spans: fix(m.spans),
         jointLoads: fix(m.jointLoads),
       };
     });
