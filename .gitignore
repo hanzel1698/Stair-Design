@@ -1,2 +1,4 @@
 node_modules/
 web/dist/
+.impeccable/hook.cache.json
+S1-reaction-on-S2.svg
