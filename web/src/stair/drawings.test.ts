@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { emptyModel } from '../model/types';
-import { template } from './stair';
-import { planSvg, unitWeightsHtml } from './drawings';
+import { autoSpans, template } from './stair';
+import { bearingSvg, planSvg, unitWeightsHtml } from './drawings';
 import { resultsHtml } from '../ui/StairPanel';
 
 describe('report drawings', () => {
@@ -24,6 +24,15 @@ describe('report drawings', () => {
     const h = planSvg(m);
     expect(h.match(/<svg /g)?.length).toBe(2);
     expect(h).toContain('Fig. 1b');
+  });
+  it('a span carrying another gets a bearing plan; a span on beams only does not', () => {
+    const t = template(emptyModel(), 'L', 'Story1', 'B300x500', 'C400x400');
+    const m = autoSpans({ ...t, beams: t.beams.filter((b) => !(b.x1 === b.x2 && b.x1 > 0)) });
+    const [s1, s2] = m.spans,
+      h = bearingSvg(m, s2, 9);
+    expect(h).toContain(`R(${s1.name})`);
+    expect(h).not.toMatch(/NaN|undefined/);
+    expect(bearingSvg(m, s1, 9)).toBe('');
   });
 });
 

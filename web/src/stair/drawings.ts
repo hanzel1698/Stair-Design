@@ -535,6 +535,78 @@ export function spanSectionSvg(m: Model, sp: Span, no: number) {
   return S.svg(`Fig. ${no} — Span ${sp.name}: section along the design strip (A = start, B = end)`);
 }
 
+// ---------- span: plan of other spans bearing on it ----------
+
+/** Plan of where each span resting on `sp` puts its end reaction (hatched), dimensioned from A; '' when none does. */
+export function bearingSvg(m: Model, sp: Span, no: number) {
+  const A = analyze(m, sp);
+  if (!A?.tr.length) return '';
+  const strip = (o: Span, s0?: number, s1?: number) => {
+    const L = Math.hypot(o.x2 - o.x1, o.y2 - o.y1) || 1,
+      u = [(o.x2 - o.x1) / L, (o.y2 - o.y1) / L],
+      h = [-u[1] * (o.width / 2), u[0] * (o.width / 2)],
+      p = (s: number) => [o.x1 + u[0] * s, o.y1 + u[1] * s],
+      a = p(s0 ?? 0),
+      b = p(s1 ?? L);
+    return [[a[0] + h[0], a[1] + h[1]], [b[0] + h[0], b[1] + h[1]], [b[0] - h[0], b[1] - h[1]], [a[0] - h[0], a[1] - h[1]]];
+  };
+  const u = A.u,
+    n = [-u[1], u[0]],
+    Lmm = A.L * 1000,
+    at = (s: number, q = 0) => [sp.x1 + u[0] * s + n[0] * q, sp.y1 + u[1] * s + n[1] * q],
+    rot = (v: number[]) => {
+      const g = (Math.atan2(-v[1], v[0]) * 180) / Math.PI;
+      return g > 90 ? g - 180 : g < -90 ? g + 180 : g;
+    },
+    pts = [sp, ...A.tr.map((t) => t.from)].flatMap((o) => strip(o)),
+    e = 900,
+    bb = { x0: Math.min(...pts.map((p) => p[0])) - e, y0: Math.min(...pts.map((p) => p[1])) - e, x1: Math.max(...pts.map((p) => p[0])) + e, y1: Math.max(...pts.map((p) => p[1])) + e };
+  const S = new Sheet(bb, 760, 480, 50);
+  // the stair slabs round about, for orientation
+  for (const it of [...m.flights, ...m.landings]) {
+    const r = 'n' in it ? frame(it).r : landingRect(it);
+    if (r.x1 < bb.x0 || r.x0 > bb.x1 || r.y1 < bb.y0 || r.y0 > bb.y1) continue;
+    S.rect(r.x0, r.y0, r.x1, r.y1, THIN).text(Math.max(r.x0, bb.x0) + 60, Math.min(r.y1, bb.y1) - 60, it.name, { a: 'start', dy: 9, size: 9, fill: '#777' });
+  }
+  for (const g of m.grids) {
+    if (g.dir === 'X' && g.x1 > bb.x0 && g.x1 < bb.x1) S.line(g.x1, bb.y0 + 250, g.x1, bb.y1, CTR);
+    else if (g.dir === 'Y' && g.y1 > bb.y0 && g.y1 < bb.y1) S.line(bb.x0 + 250, g.y1, bb.x1, g.y1, CTR);
+    else continue;
+    const b = g.dir === 'X' ? [g.x1, bb.y0 + 250] : [bb.x0 + 250, g.y1];
+    S.add(`<circle cx="${S.X(b[0]).toFixed(1)}" cy="${S.Y(b[1]).toFixed(1)}" r="10" fill="#fff" stroke="#000" stroke-width="0.8"/>`).text(b[0], b[1], g.label, { dy: 4, size: 11, bold: true });
+  }
+  S.poly(strip(sp), 'stroke="#c0392b" stroke-width="1.2" fill="#c0392b" fill-opacity="0.06"');
+  for (const t of A.tr) S.poly(strip(t.from), 'stroke="#000" stroke-width="0.9" fill="#f3f3f3" fill-opacity="0.7" stroke-dasharray="6 3"');
+  for (const t of A.tr) S.poly(strip(sp, t.a * 1000, t.b * 1000), 'stroke="#000" stroke-width="1.6" fill="url(#hatch2)"');
+  S.line(sp.x1, sp.y1, sp.x2, sp.y2, SPAN);
+  S.text(...(at(0) as [number, number]), 'A', { dx: -10 * u[0], dy: 10 * u[1] + 4, bold: true, size: 12 }).text(...(at(Lmm) as [number, number]), 'B', { dx: 10 * u[0], dy: -10 * u[1] + 4, bold: true, size: 12 });
+  const free = A.tr.reduce((c, t) => Math.max(c, t.b), 0) * 1000,
+    lab = at((free + Lmm) / 2);
+  S.text(lab[0], lab[1], `${sp.name} (${sp.story}) · L = ${f(A.L, 3)} m · strip ${sp.width}`, { rot: rot(u), dy: -5, size: 10.5, bold: true, fill: '#c0392b' });
+  // dimensions on the side of the strip away from the spans resting on it
+  const side = Math.sign(A.tr.reduce((s, t) => s + ((t.from.x1 + t.from.x2) / 2 - sp.x1) * n[0] + ((t.from.y1 + t.from.y2) / 2 - sp.y1) * n[1], 0)) || 1,
+    q = (-side * sp.width) / 2,
+    out = [-side * n[0], -side * n[1]],
+    cuts = [...new Set([0, ...A.tr.flatMap((t) => [t.a * 1000, t.b * 1000]), Lmm].map((v) => Math.round(v)))].sort((a, b) => a - b);
+  for (let i = 1; i < cuts.length; i++) S.dimOut(at(cuts[i - 1], q), at(cuts[i], q), out, 14, `${cuts[i] - cuts[i - 1]}`);
+  A.tr.forEach((t, i) => {
+    const o = t.from,
+      c = ((t.a + t.b) / 2) * 1000,
+      P = t.end ? [o.x2, o.y2] : [o.x1, o.y1],
+      uo = [o.x2 - o.x1, o.y2 - o.y1],
+      lo = Math.hypot(uo[0], uo[1]) || 1,
+      // labels a quarter strip off the centre lines, clear of the chain line and the bearing dot
+      mid = [(o.x1 + o.x2) / 2 - (uo[1] / lo) * (o.width / 4), (o.y1 + o.y2) / 2 + (uo[0] / lo) * (o.width / 4)],
+      pc = at(c, q / 2);
+    S.line(o.x1, o.y1, o.x2, o.y2, 'stroke="#000" stroke-width="0.8" fill="none" stroke-dasharray="14 3 2 3"');
+    S.add(`<circle cx="${S.X(P[0]).toFixed(1)}" cy="${S.Y(P[1]).toFixed(1)}" r="3.5" fill="#000"/>`);
+    S.text(mid[0], mid[1], `${o.name} (${o.story}) — end ${t.end ? 'B' : 'A'} rests on ${sp.name}`, { rot: rot(uo), dy: 4, size: 10, bold: true });
+    S.text(pc[0], pc[1], `R(${o.name}) ${f(t.dl)} DL + ${f(t.ll)} LL kN/m²`, { rot: rot(u), dy: 4, size: 9.5, bold: true });
+    S.dimOut(at(0, q), at(c, q), out, 40 + 24 * i, `${Math.round(c)} = centre of R(${o.name}) from A`);
+  });
+  return S.svg(`Fig. ${no} — Span ${sp.name}: plan of the spans resting on it; hatched = their end reaction as applied on ${sp.name}, dimensioned from end A`, false);
+}
+
 // ---------- span: loading, shear force and bending moment ----------
 
 export function spanLoadSvg(m: Model, sp: Span, no: number) {

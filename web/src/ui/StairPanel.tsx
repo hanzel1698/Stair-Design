@@ -3,7 +3,7 @@ import { startMovePick } from '../plan/tools';
 import { beamEndsZ, placeAt, storyElevations, withDz, type Beam, type Flight, type Landing, type Model, type Span, type StairParams } from '../model/types';
 import { Modal } from './Dialogs';
 import { analyze, beamFlipped, beamLoads, beamName, frame, gridRef, suggestWaist, withWaist, type Transfer } from '../stair/stair';
-import { beamLoadSvg, flightSvg, planSvg, spanLoadSvg, spanSectionSvg, unitWeightsHtml } from '../stair/drawings';
+import { beamLoadSvg, bearingSvg, flightSvg, planSvg, spanLoadSvg, spanSectionSvg, unitWeightsHtml } from '../stair/drawings';
 
 type Field<T> = [keyof T & string, string, ('text' | 'num' | string[])?];
 
@@ -408,7 +408,7 @@ export function resultsHtml(m: Model, act = false) {
     const d = A.des;
     h += `<div class="card"><h4>${esc(sp.name)} — effective span ${f2(A.L, 3)} m, strip width ${f2(sp.width / 1000)} m</h4>
 <div class="info">Supports: ${A.sup.map((s) => (s.beam ? esc(beamTag(m, s.beam)) : s.span ? `rests on span ${esc(s.span.name)} at ${f2(s.at!)} m` : 'none (wall/other)')).join(' → ')}</div>
-${spanSectionSvg(m, sp, fig.n++)}${spanLoadSvg(m, sp, fig.n++)}
+${spanSectionSvg(m, sp, fig.n++)}${A.tr.length ? bearingSvg(m, sp, fig.n++) : ''}${spanLoadSvg(m, sp, fig.n++)}
 <table><tr><th>Element</th><th>From (m)</th><th>To (m)</th><th>l_i (m)</th><th>w_w</th><th>w_s</th><th>w_ff</th><th>Share k</th><th>k·g (kN/m²)</th><th>k·q (kN/m²)</th><th>w_u (kN/m²)</th></tr>`;
     for (const s of A.segs) h += `<tr><td>${esc(s.it.name)} (${'n' in s.it ? 'flight' : 'landing'}, t=${s.it.t})</td><td>${f2(s.a)}</td><td>${f2(s.b)}</td><td>${f2(s.b - s.a)}</td><td>${f2(s.ld.ws)}</td><td>${f2(s.ld.st)}</td><td>${f2(s.ld.ff)}</td><td>${s.k === 1 ? '100%' : '50% (cl 33.2)'}</td><td>${f2(s.dl)}</td><td>${f2(s.ll)}</td><td>${f2(p.gf * (s.dl + s.ll))}</td></tr>`;
     for (const t of A.tr) h += `<tr><td>Reaction of span ${esc(t.from.name)} (${t.end ? 'end' : 'start'})</td><td>${f2(t.a)}</td><td>${f2(t.b)}</td><td>${f2(t.b - t.a)}</td><td>—</td><td>—</td><td>—</td><td>100%</td><td>${f2(t.dl)}</td><td>${f2(t.ll)}</td><td>${f2(p.gf * (t.dl + t.ll))}</td></tr>`;
