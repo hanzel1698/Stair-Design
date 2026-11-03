@@ -57,6 +57,19 @@ export const rectPts = (r: Rect): Pt[] => [
   { x: r.x0, y: r.y1 },
 ];
 
+/** Midpoints of a landing's sides; side i runs from rectPts[i] to rectPts[i + 1] (0 y0, 1 x1, 2 y1, 3 x0). */
+export const landingSides = (l: Landing): Pt[] => rectPts(landingRect(l)).map((p, i, a) => ({ x: (p.x + a[(i + 1) % 4].x) / 2, y: (p.y + a[(i + 1) % 4].y) / 2 }));
+
+/** Landing with one side moved to `p` (whole mm), the opposite side staying put. */
+export function reshapeLanding(l: Landing, side: number, p: Pt): Landing {
+  const r = landingRect(l);
+  if (side === 0) r.y0 = Math.round(p.y);
+  else if (side === 1) r.x1 = Math.round(p.x);
+  else if (side === 2) r.y1 = Math.round(p.y);
+  else r.x0 = Math.round(p.x);
+  return { ...l, x: Math.min(r.x0, r.x1), y: Math.min(r.y0, r.y1), w: Math.abs(r.x1 - r.x0), h: Math.abs(r.y1 - r.y0) };
+}
+
 /** Stepped side profile [s, z] of a flight (mm, from its bottom nosing line), waist soffit included. */
 export function profile(f: Flight): [number, number][] {
   const { T, R, n } = f,

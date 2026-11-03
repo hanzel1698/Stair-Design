@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emptyModel, type Model } from '../model/types';
-import { analyze, autoSpans, beamLoads, beamName, flightGrips, kSlab, renumber, reshapeFlight, spanKey, ssBeam, suggestWaist, tauC, template, withWaist } from './stair';
+import { analyze, autoSpans, beamLoads, beamName, flightGrips, kSlab, renumber, reshapeFlight, reshapeLanding, spanKey, ssBeam, suggestWaist, tauC, template, withWaist } from './stair';
 
 describe('stair statics and IS 456 tables', () => {
   it('simply supported UDL and partial load', () => {
@@ -31,6 +31,15 @@ describe('flight grips', () => {
   it('side changes the width only', () => {
     expect(reshapeFlight(f, 'a0', { x: 500, y: -200 })).toMatchObject({ n: 5, x: 0, y: -200, width: 1200 });
     expect(reshapeFlight(f, 'a1', { x: 500, y: 100 }).width).toBe(300);
+  });
+});
+
+describe('landing side grips', () => {
+  const l = { id: 'l', name: 'L1', x: 0, y: 0, w: 2000, h: 1200, t: 150, z: 0 };
+  it('moves only the dragged side', () => {
+    expect(reshapeLanding(l, 1, { x: 2600.4, y: 9999 })).toMatchObject({ x: 0, y: 0, w: 2600, h: 1200 });
+    expect(reshapeLanding(l, 3, { x: -500, y: 300 })).toMatchObject({ x: -500, y: 0, w: 2500, h: 1200 });
+    expect(reshapeLanding(l, 0, { x: 0, y: 1500 })).toMatchObject({ x: 0, y: 1200, w: 2000, h: 300 }); // dragged past the far side
   });
 });
 

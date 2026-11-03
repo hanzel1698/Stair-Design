@@ -11,7 +11,7 @@ import { columnOutline } from './snap';
 import { useUnderlay, regionFor } from '../underlay/store';
 import { UnderlayCanvas } from './UnderlayCanvas';
 import { StairLayer } from './StairLayer';
-import { flightGrips, flightStory, landingStory, landingRect, rectPts } from '../stair/stair';
+import { flightGrips, flightStory, landingStory, landingRect, landingSides, rectPts } from '../stair/stair';
 import { useIssues } from '../ui/Checks';
 import { useFramePick, useMovePick } from '../ui/dialogState';
 
@@ -382,14 +382,14 @@ function IssueLayer({ story, offset }: { story: string; offset: Pt | null }) {
   );
 }
 
-/** End grips on selected beams and grids, corner grips on selected landings, end and side-midpoint grips on selected spans and flights (screen space, fixed size). Drag one to reshape or extend it. */
+/** End grips on selected beams and grids, corner and side-midpoint grips on selected landings, end and side-midpoint grips on selected spans and flights (screen space, fixed size). Drag one to reshape or extend it. */
 function GripLayer({ beams, flights, landings, spans, sel, offset }: { beams: Pick<Beam, 'id' | 'x1' | 'y1' | 'x2' | 'y2'>[]; flights: Flight[]; landings: Landing[]; spans: Span[]; sel: Set<string>; offset: Pt | null }) {
   useVp();
   const ox = offset?.x ?? 0,
     oy = offset?.y ?? 0;
   const picked = [
     ...beams.filter((b) => sel.has(b.id)).map((b) => ({ id: b.id, pts: [{ x: b.x1, y: b.y1 }, { x: b.x2, y: b.y2 }] })),
-    ...landings.filter((l) => sel.has(l.id)).map((l) => ({ id: l.id, pts: rectPts(landingRect(l)) })),
+    ...landings.filter((l) => sel.has(l.id)).map((l) => ({ id: l.id, pts: [...rectPts(landingRect(l)), ...landingSides(l)] })),
     ...spans.filter((sp) => sel.has(sp.id)).map((sp) => ({ id: sp.id, pts: spanGrips(sp).map(([, q]) => q) })),
     ...flights.filter((f) => sel.has(f.id)).map((f) => ({ id: f.id, pts: Object.values(flightGrips(f)) })),
   ];

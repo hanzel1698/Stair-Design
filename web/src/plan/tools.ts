@@ -10,7 +10,7 @@ import { viewport } from './viewport';
 import { useUnderlay, saveUnderlayMeta, regionFor, sheetFor, rescaleDxf, rectOf } from '../underlay/store';
 import { openDialog, useFramePick, useMovePick } from '../ui/dialogState';
 import { fitAll } from './PlanView';
-import { flightFrom, flightGrips, flightStory, frame, OPPOSITE, reshapeFlight, type FlightEdge, landingStory, levelGuess, nextNames, clip, landingRect, rectPts } from '../stair/stair';
+import { flightFrom, flightGrips, flightStory, frame, OPPOSITE, reshapeFlight, type FlightEdge, landingStory, levelGuess, nextNames, clip, landingRect, rectPts, landingSides, reshapeLanding } from '../stair/stair';
 import { storyElevations } from '../model/types';
 
 const SNAP_PX = 12;
@@ -698,8 +698,8 @@ export function fillIntersections(a: Pt, b: Pt) {
 
 // ---------- beam and grid end grips (select tool) ----------
 
-/** A beam, grid or span end, a landing corner (index into rectPts; the opposite corner stays put), or a span side midpoint (width, about the axis). */
-export type Grip = { id: string; end: 1 | 2 } | { id: string; corner: number } | { id: string; side: 1 | -1 } | { id: string; edge: FlightEdge };
+/** A beam, grid or span end, a landing corner (index into rectPts; the opposite corner stays put) or side midpoint (index into landingSides; the opposite side stays put), or a span side midpoint (width, about the axis). */
+export type Grip = { id: string; end: 1 | 2 } | { id: string; corner: number } | { id: string; lside: number } | { id: string; side: 1 | -1 } | { id: string; edge: FlightEdge };
 
 /** Span axis midpoint and unit normal. */
 function spanMid(sp: Span) {
@@ -745,6 +745,12 @@ export function gripAt(screen: Pt): Grip | null {
         const d = dist(w, q);
         if (d < bd) (bd = d), (best = { id: l.id, corner });
       });
+  for (const l of model.landings)
+    if (s.has(l.id) && landingStory(model, l) === activeStory)
+      landingSides(l).forEach((q, lside) => {
+        const d = dist(w, q);
+        if (d < bd) (bd = d), (best = { id: l.id, lside });
+      });
   for (const sp of model.spans)
     if (s.has(sp.id) && sp.story === activeStory)
       for (const [g, q] of spanGrips(sp)) {
@@ -769,6 +775,14 @@ function gripSnap(g: Grip, screen: Pt): { s: Snap; fixed: Pt; p: Pt } | null {
     const fixed = rectPts(landingRect(l))[(g.corner + 2) % 4];
     const s = snapPoint({ ...m, landings: m.landings.filter((x) => x.id !== g.id) }, viewport.toWorld(screen), SNAP_PX / viewport.k, { story: A().activeStory, from: fixed, ortho: false, underlay: A().show.underlay });
     return { s, fixed, p: s.p };
+  }
+  if ('lside' in g) {
+    const l = m.landings.find((x) => x.id === g.id);
+    if (!l) return null;
+    const s = snapPoint({ ...m, landings: m.landings.filter((x) => x.id !== g.id) }, viewport.toWorld(screen), SNAP_PX / viewport.k, { story: A().activeStory, from: landingSides(l)[(g.lside + 2) % 4], ortho: false, underlay: A().show.underlay });
+    // only the dragged side moves: the preview runs between the reshaped landing's opposite side midpoints
+    const sides = landingSides(reshapeLanding(l, g.lside, s.p));
+    return { s, fixed: sides[(g.lside + 2) % 4], p: sides[g.lside] };
   }
   if ('edge' in g) {
     const f = m.flights.find((x) => x.id === g.id);
@@ -817,6 +831,13 @@ export function gripDrop(g: Grip, screen: Pt) {
     const { fixed: a, p: b } = r;
     if (Math.abs(b.x - a.x) < 100 || Math.abs(b.y - a.y) < 100) return toast('Landing is too small.');
     return A().commit((m) => ({ ...m, landings: m.landings.map((l) => (l.id === g.id ? { ...l, x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) } : l)) }));
+  }
+  if ('lside' in g) {
+    const l = A().model.landings.find((x) => x.id === g.id);
+    const nl = l && reshapeLanding(l, g.lside, r.s.p);
+    if (!nl) return;
+    if (nl.w < 100 || nl.h < 100) return toast('Landing is too small.');
+    return A().commit((m) => ({ ...m, landings: m.landings.map((x) => (x.id === g.id ? nl : x)) }));
   }
   if ('edge' in g) return A().commit((m) => ({ ...m, flights: m.flights.map((f) => (f.id === g.id ? reshapeFlight(f, g.edge, r.p) : f)) }));
   const editSpan = (f: (x: Span) => Partial<Span>) => A().commit((m) => ({ ...m, spans: m.spans.map((x) => (x.id === g.id ? { ...x, ...f(x), auto: false } : x)) }));
