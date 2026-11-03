@@ -165,6 +165,9 @@ export function StairParamsDialog() {
   return (
     <Modal title="Stair design parameters">
       <Form obj={p} fields={PARAMS} onSet={(k, v) => useApp.getState().commit((m) => ({ ...m, stair: { ...m.stair, ...(k === 't' || k === 'tl' ? { t: +v, tl: +v } : { [k]: +v }) } }))} />
+      <button onClick={() => useApp.getState().commit((m) => withWaist(m, m.stair.t))} title="Set every flight waist and landing thickness in the model to the default waist">
+        Apply {p.t} mm to all flights &amp; landings
+      </button>
     </Modal>
   );
 }
