@@ -237,6 +237,16 @@ function suggestHtml(m: Model, act: boolean) {
   return `<div class="info">Suggested slab thickness: <b>${s.t} mm</b> — the least that passes flexure, shear and deflection on every span (thumb rule L/20 of the longest span = ${s.thumb} mm). ${act && !same ? `<button data-t="${s.t}">Use ${s.t} mm for all flights &amp; landings</button>` : ''}</div>`;
 }
 
+/** In-app only: deflection failures up front, with the waist that makes every span pass. */
+function deflAlert(m: Model) {
+  const bad = m.spans.flatMap((sp) => {
+    const d = analyze(m, sp)?.des;
+    return d && !d.defl ? [`<li>${esc(sp.name)}: L/d = ${f2(d.ld, 2)} &gt; (L/d)_allow = ${f2(d.ldAllow, 2)} (waist ${d.D} mm)</li>`] : [];
+  });
+  if (!bad.length) return '';
+  return `<div class="card"><b class="ng">Deflection fails on ${bad.length} span${bad.length > 1 ? 's' : ''}</b><ul>${bad.join('')}</ul>${suggestHtml(m, true)}</div>`;
+}
+
 const NOTATION: [string, string, string][] = [
   ['R', 'riser height', 'mm'],
   ['T', 'tread (horizontal going of one step)', 'mm'],
@@ -383,7 +393,8 @@ export function resultsHtml(m: Model, act = false) {
   const p = m.stair,
     { out, warn } = beamLoads(m),
     fig = { n: 2 };
-  let h = `<h2>Stair layout</h2>${planSvg(m)}${notationHtml()}`;
+  let h = act ? deflAlert(m) : '';
+  h += `<h2>Stair layout</h2>${planSvg(m)}${notationHtml()}`;
   if (m.flights.length) h += '<h2>Flight elevations</h2>' + m.flights.map((f) => flightSvg(f, fig.n++)).join('');
   h += unitWeightsHtml(m, fig);
   h += `<h2>Stair loads on beams</h2>
