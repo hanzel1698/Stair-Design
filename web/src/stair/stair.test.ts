@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emptyModel, type Model } from '../model/types';
-import { analyze, autoSpans, beamLoads, beamName, flightGrips, kSlab, reshapeFlight, ssBeam, suggestWaist, tauC, template, withWaist } from './stair';
+import { analyze, autoSpans, beamLoads, beamName, flightGrips, kSlab, renumber, reshapeFlight, spanKey, ssBeam, suggestWaist, tauC, template, withWaist } from './stair';
 
 describe('stair statics and IS 456 tables', () => {
   it('simply supported UDL and partial load', () => {
@@ -70,6 +70,17 @@ describe('templates', () => {
     const own = A2.segs.reduce((a, g) => a + g.dl * (g.b - g.a), 0) * s2.width;
     expect((A2.D.RA + A2.D.RB) * s2.width).toBeCloseTo(own + A1.D.RB * s1.width);
     expect(beamLoads(m).warn).toEqual([]);
+  });
+});
+
+describe('span numbering', () => {
+  it('S<n> follows the flight it covers, whatever the list order or old names', () => {
+    const t = template(emptyModel(), 'dog', 'Story1', 'B300x500', 'C400x400');
+    const m = { ...t, spans: [...t.spans].reverse().map((s, i) => ({ ...s, name: `S${i + 7}` })) };
+    const sp = renumber(m.spans, 'S', (s) => spanKey(m, s));
+    const lowest = [...m.flights].sort((a, b) => a.z0 - b.z0)[0];
+    expect(sp.map((s) => s.name).sort()).toEqual(['S1', 'S2']);
+    expect(analyze(m, sp.find((s) => s.name === 'S1')!)!.segs.some((g) => g.it === lowest)).toBe(true);
   });
 });
 

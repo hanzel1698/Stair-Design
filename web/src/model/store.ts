@@ -4,7 +4,7 @@ import { shortFrameLoad, frameLoadUnit } from './loads';
 import type { PanelSize } from './ops';
 import { defaultLoadFilter, type LoadFilterState } from './loadFilter';
 import { firstSection } from '../ui/sectionGroups';
-import { renumber } from '../stair/stair';
+import { renumber, spanKey } from '../stair/stair';
 
 export type ToolName =
   | 'select'
@@ -189,12 +189,17 @@ export const useApp = create<AppState>((set, get) => ({
     let next = fn(prev);
     if (next === prev) return;
     if (next.landings !== prev.landings) {
-      const landings = renumber(next.landings, 'L', (l) => l.z);
+      const landings = renumber(next.landings, 'L', (l) => [l.z, l.x, l.y]);
       if (landings !== next.landings) next = { ...next, landings };
     }
     if (next.flights !== prev.flights) {
-      const flights = renumber(next.flights, 'F', (f) => f.z0);
+      const flights = renumber(next.flights, 'F', (f) => [f.z0, f.x, f.y]);
       if (flights !== next.flights) next = { ...next, flights };
+    }
+    if (next.spans !== prev.spans || next.flights !== prev.flights || next.landings !== prev.landings) {
+      const n = next;
+      const spans = renumber(n.spans, 'S', (sp) => spanKey(n, sp));
+      if (spans !== n.spans) next = { ...n, spans };
     }
     set((s) => ({ model: next, past: [...s.past.slice(-HISTORY + 1), prev], future: [], dirty: s.dirty + 1, active: validActive(s.active, next) }));
   },

@@ -575,12 +575,21 @@ export function nextNames(taken: string[], P: string) {
   return () => `${P}${++i}`;
 }
 
-/** Auto-named items (P<n>) renumbered P1, P2, … from the lowest `z` up; names the user typed stay. Returns `ls` itself when nothing changed. */
-export function renumber<T extends { id: string; name: string; x: number; y: number }>(ls: T[], P: string, z: (t: T) => number): T[] {
+/** Auto-named items (P<n>) renumbered P1, P2, … by `key` ascending ([z, x, y]); names the user typed stay. Returns `ls` itself when nothing changed. */
+export function renumber<T extends { id: string; name: string }>(ls: T[], P: string, key: (t: T) => number[]): T[] {
   const re = new RegExp(`^${P}\\d+$`);
-  const auto = ls.filter((l) => re.test(l.name)).sort((a, b) => z(a) - z(b) || a.x - b.x || a.y - b.y);
+  const k = new Map(ls.map((l) => [l.id, key(l)]));
+  const auto = ls.filter((l) => re.test(l.name)).sort((a, b) => k.get(a.id)!.reduce((d, v, i) => d || v - k.get(b.id)![i], 0));
   const name = new Map(auto.map((l, i) => [l.id, `${P}${i + 1}`]));
   return ls.some((l) => name.has(l.id) && name.get(l.id) !== l.name) ? ls.map((l) => (name.has(l.id) ? { ...l, name: name.get(l.id)! } : l)) : ls;
+}
+
+/** Sort key for span numbering: the lowest flight it covers (else landing, else its story), then plan position — so S<n> follows F<n>. */
+export function spanKey(m: Model, sp: Span): number[] {
+  const z = (its: (Flight | Landing)[]) => Math.min(...its.filter((it) => crosses(m, sp, it)).map((it) => ('n' in it ? it.z0 : it.z)));
+  const f = z(m.flights),
+    l = z(m.landings);
+  return [isFinite(f) ? f : isFinite(l) ? l : storyElevations(m)[sp.story]?.bottom ?? 0, Math.min(sp.x1, sp.x2), Math.min(sp.y1, sp.y2)];
 }
 
 /** New flight from the bottom of the going at `a` towards `b` (the drag also sets the width when it goes sideways ≥ 300 mm). */
