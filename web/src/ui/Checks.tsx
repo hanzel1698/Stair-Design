@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { toast, useApp } from '../model/store';
+import { shows, toast, useApp } from '../model/store';
 import { issueKey, modelIssues, type Issue, type IssueKind } from '../model/checks';
 import { log } from '../log/sessionLog';
 import { viewport } from '../plan/viewport';
@@ -38,7 +38,7 @@ export function goToIssue(i: Issue) {
   if (i.story && i.story !== st.activeStory && st.model.stories.some((s) => s.name === i.story)) st.setActiveStory(i.story);
   const ids = new Set(i.ids);
   useApp.setState((s) => ({ hidden: s.hidden.filter((id) => !ids.has(id)), selection: i.ids }));
-  if (st.panel === '3d' || st.panel === 'elev') st.setPanel('split');
+  if (!shows(st, 'plan')) st.panel === 'split' ? st.setSplitView(0, 'plan') : st.setPanel('plan');
   const pts = elementPts(st.model, ids);
   if (!pts.length) pts.push(i.at);
   const pad = 2000;

@@ -559,8 +559,10 @@ label {
 .view3d {
   flex: 1;
   position: relative;
-  border-left: 1px solid var(--line);
   min-width: 0;
+}
+.main > :is(.plan-host, .elev-view, .view3d) + :is(.plan-host, .elev-view, .view3d) {
+  border-left: 1px solid var(--line);
 }
 .view3d .bar {
   position: absolute;

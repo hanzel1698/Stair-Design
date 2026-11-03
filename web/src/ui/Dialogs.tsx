@@ -5,7 +5,7 @@ import { SelectByDialog } from './SelectByDialog';
 import { PlanSheetsDialog } from './PlanSheetsDialog';
 import { StairParamsDialog, StairResultsDialog } from './StairPanel';
 import { FrameLoadDialog, JointLoadDialog, LoadPatternsDialog, ShellLoadDialog } from './LoadDialogs';
-import { useApp, toast } from '../model/store';
+import { useApp, toast, shows } from '../model/store';
 import { generateGrids, lift, moveIds, oppositeLabelStart, replicate } from '../model/ops';
 import { parseSpacing, fmt } from '../model/geom';
 import { columnStories, levelZ, uid, storyElevations, type Column, type FrameSection, type Model, type RefPlane, type SlabSection, type Story } from '../model/types';
@@ -275,8 +275,7 @@ function MoveDialog() {
   useEffect(() => () => void (movePicking() && endMovePick()), []);
   // pick a base point and a destination in the plan; the vector between them fills dx and dy
   const pick = () => {
-    const panel = useApp.getState().panel;
-    if (panel !== 'plan' && panel !== 'split') return toast('Switch to the plan view to pick the move.');
+    if (!shows(useApp.getState(), 'plan')) return toast('Switch to the plan view to pick the move.');
     startMovePick((x, y) => (setDx(+x.toFixed(3)), setDy(+y.toFixed(3))));
   };
   return (

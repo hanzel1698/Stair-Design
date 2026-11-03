@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { useApp, COLOR_BY, type ToolName } from '../model/store';
+import { useApp, COLOR_BY, type ToolName, type View } from '../model/store';
+
+/** The views a pane can show, with their names. */
+export const VIEWS: [View, string][] = [['plan', 'Plan'], ['3d', '3D'], ['elev', 'Elevation']];
 import { setTool } from '../plan/tools';
 import { fitAll } from '../plan/PlanView';
 import { downloadProject } from '../model/persist';
@@ -178,7 +181,8 @@ export function MainMenu({ onNew, onOpen, onUnderlay }: { onNew: () => void; onO
     down = si > 0 ? stories[si - 1].name : undefined;
   const toolItem = (x: (typeof TOOLS)[number]): Entry => ({ label: x.label, kbd: x.key, checked: tool === x.t, run: () => setTool(x.t) });
   const tools = Object.fromEntries(TOOLS.map((x) => [x.t, toolItem(x)]));
-  const view = (p: 'plan' | '3d' | 'split' | 'elev' | 'elev3d', label: string): Entry => ({ label, checked: panel === p, run: () => st().setPanel(p) });
+  const split = useApp((s) => s.split);
+  const view = (p: View | 'split', label: string): Entry => ({ label, checked: panel === p, run: () => st().setPanel(p) });
 
   const menus: Menu[] = [
     {
@@ -240,10 +244,13 @@ export function MainMenu({ onNew, onOpen, onUnderlay }: { onNew: () => void; onO
       label: 'View',
       items: [
         view('plan', 'Plan'),
-        view('split', 'Split (plan + 3D)'),
         view('3d', '3D'),
         view('elev', 'Elevation'),
-        view('elev3d', 'Elevation + 3D (draw the stair)'),
+        view('split', 'Split'),
+        ...([0, 1] as const).map((i): Entry => ({
+          label: i ? 'Split right' : 'Split left',
+          sub: VIEWS.map(([v, l]) => ({ label: l, checked: split[i] === v, run: () => (st().setSplitView(i, v), st().setPanel('split')) })),
+        })),
         'sep',
         { label: 'View by', title: 'Colour columns, beams and slabs in the plan and elevation by…', sub: COLOR_BY.map(([k, l]) => ({ label: l, checked: colorBy === k, run: () => st().setColorBy(k) })) },
         'sep',

@@ -280,7 +280,7 @@ const SHOW_NAMES: Record<keyof ShowFlags, string> = {
   nodes: 'nodes',
   loads: 'loads',
 };
-const PANEL_NAMES = { plan: 'plan view only', '3d': '3D view only', split: 'plan and 3D side by side', elev: 'elevation view', elev3d: 'elevation and 3D side by side' };
+const VIEW_NAMES = { plan: 'plan', '3d': '3D', elev: 'elevation' };
 
 /** The elements `ids` picks out: one in full, several as "3 beams on Story2 (B300x500), 1 column on Story2". */
 function describeIds(m: Model, ids: string[]) {
@@ -335,7 +335,8 @@ export function startSessionLog() {
     if (s.tool !== p.tool) log('tool', `${TOOL_NAMES[s.tool] ?? s.tool} tool (was ${TOOL_NAMES[p.tool] ?? p.tool})`);
     if (s.activeStory !== p.activeStory) log('view', `Active story ${p.activeStory || 'none'} → ${s.activeStory}`);
     if (s.alsoStories !== p.alsoStories) log('view', s.alsoStories.length ? `Drawing also applies to ${s.alsoStories.join(', ')}` : 'Drawing applies to the active story only');
-    if (s.panel !== p.panel) log('view', `Showing ${PANEL_NAMES[s.panel]}`);
+    if (s.panel !== p.panel || (s.panel === 'split' && s.split !== p.split))
+      log('view', s.panel === 'split' ? `Showing ${VIEW_NAMES[s.split[0]]} and ${VIEW_NAMES[s.split[1]]} side by side` : `Showing ${VIEW_NAMES[s.panel]} view only`);
     if (s.ortho !== p.ortho) log('setting', `Ortho ${s.ortho ? 'on: lines snap to horizontal/vertical' : 'off: lines at any angle'}`);
     if (s.autoBeam !== p.autoBeam) log('setting', `Auto beam size ${s.autoBeam ? 'on: new beams sized from span and supports' : `off: new beams use ${s.active.beam}`}`);
     if (s.autoSplitSlabs !== p.autoSplitSlabs) log('setting', `Split slabs at new beams ${s.autoSplitSlabs ? 'on' : 'off'}`);

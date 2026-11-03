@@ -1,4 +1,4 @@
-import { toast, useApp } from '../model/store';
+import { shows, toast, useApp } from '../model/store';
 import { startMovePick } from '../plan/tools';
 import { beamEndsZ, placeAt, storyElevations, withDz, type Beam, type Flight, type Landing, type Model, type Span, type StairParams } from '../model/types';
 import { Modal } from './Dialogs';
@@ -87,8 +87,7 @@ const patch = <K extends 'flights' | 'landings' | 'spans'>(kind: K, id: string, 
   useApp.getState().commit((m) => ({ ...m, [kind]: (m[kind] as { id: string }[]).map((x) => (x.id === id ? { ...x, [k]: k === 'n' ? Math.max(2, Math.round(+v)) : v, ...(kind === 'spans' ? { auto: false } : {}) } : x)) }));
 
 function pickWidth(id: string) {
-  const panel = useApp.getState().panel;
-  if (panel !== 'plan' && panel !== 'split') return toast('Switch to the plan view to pick the width.');
+  if (!shows(useApp.getState(), 'plan')) return toast('Switch to the plan view to pick the width.');
   startMovePick((dx, dy) => patch('spans', id, 'width', Math.round(Math.hypot(dx, dy))), ['Strip width: click the first edge point (snaps to flight edges, beams...). Esc returns without it.', 'Strip width: click the opposite edge point; the distance becomes the width.']);
 }
 

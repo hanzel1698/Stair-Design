@@ -49,6 +49,11 @@ export interface ShowFlags {
   loads: boolean;
 }
 
+export type View = 'plan' | '3d' | 'elev';
+
+/** Whether view `v` is on screen, alone or as one half of the split. */
+export const shows = (s: { panel: AppState['panel']; split: [View, View] }, v: View) => s.panel === v || (s.panel === 'split' && s.split.includes(v));
+
 interface AppState {
   model: Model;
   past: Model[];
@@ -108,8 +113,12 @@ interface AppState {
 
   viewRotation: number; // degrees, view only
   setViewRotation: (r: number) => void;
-  panel: 'plan' | '3d' | 'split' | 'elev' | 'elev3d';
-  setPanel: (p: 'plan' | '3d' | 'split' | 'elev' | 'elev3d') => void;
+  panel: View | 'split';
+  setPanel: (p: View | 'split') => void;
+  /** what the left and right halves of the split show; never the same view twice */
+  split: [View, View];
+  /** show `v` in half `i` of the split; the other half takes this half's old view if it had `v` */
+  setSplitView: (i: 0 | 1, v: View) => void;
   /** id of the grid the elevation view looks at */
   elevGrid: string;
   setElevGrid: (id: string) => void;
@@ -282,8 +291,16 @@ export const useApp = create<AppState>((set, get) => ({
 
   viewRotation: 0,
   setViewRotation: (r) => set({ viewRotation: ((r % 360) + 360) % 360 }),
-  panel: 'elev3d',
+  panel: 'split',
   setPanel: (p) => set({ panel: p }),
+  split: ['elev', '3d'],
+  setSplitView: (i, v) =>
+    set(({ split }) => {
+      const next = [...split] as [View, View];
+      if (next[1 - i] === v) next[1 - i] = next[i];
+      next[i] = v;
+      return { split: next };
+    }),
   elevGrid: '',
   setElevGrid: (id) => set({ elevGrid: id }),
 

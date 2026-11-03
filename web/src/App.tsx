@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useEffect, useRef } from 'react';
-import { useApp, usePreview } from './model/store';
+import { useApp, usePreview, type View } from './model/store';
 import { PlanView, fitAll } from './plan/PlanView';
 import { setTool, onCancel, onInput, finishPolygon, resetTool } from './plan/tools';
 import { LeftPanel } from './ui/LeftPanel';
@@ -15,21 +15,28 @@ import { startSessionLog, log, toggleLog, useLog } from './log/sessionLog';
 import { LogPanel } from './ui/LogPanel';
 import { IssueBadge, watchIssues } from './ui/Checks';
 import { ElevView } from './elev/ElevView';
-import { MainMenu, TOOLS, MEASURE } from './ui/MenuBar';
+import { MainMenu, TOOLS, MEASURE, VIEWS } from './ui/MenuBar';
 
 const View3D = lazy(() => import('./view3d/View3D'));
 
-const VIEWS = [
+const SEG = [
   { p: 'plan', label: 'Plan' },
-  { p: 'split', label: 'Split' },
   { p: '3d', label: '3D' },
   { p: 'elev', label: 'Elev', title: 'Elevation along a grid line' },
-  { p: 'elev3d', label: 'Elev + 3D', title: 'Draw flights, landings and cranked beams in elevation, with the 3D view beside it' },
+  { p: 'split', label: 'Split', title: 'Two views side by side; pick each half’s view beside this button' },
 ] as const;
+
+const VIEW3D = (
+  <Suspense key="3d" fallback={<div className="view3d muted" style={{ padding: 20 }}>Loading 3D…</div>}>
+    <View3D />
+  </Suspense>
+);
+const PANES: Record<View, JSX.Element> = { plan: <PlanView key="plan" />, elev: <ElevView key="elev" />, '3d': VIEW3D };
 
 export function App() {
   const tool = useApp((s) => s.tool);
   const panel = useApp((s) => s.panel);
+  const split = useApp((s) => s.split);
   const toast = useApp((s) => s.toast);
   const ortho = useApp((s) => s.ortho);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -133,12 +140,18 @@ export function App() {
           <span className="spacer" />
           <StoryStepper />
           <span className="seg" role="group" aria-label="View">
-            {VIEWS.map((v) => (
+            {SEG.map((v) => (
               <button key={v.p} className={panel === v.p ? 'on' : ''} onClick={() => useApp.getState().setPanel(v.p)} title={'title' in v ? v.title : undefined}>
                 {v.label}
               </button>
             ))}
           </span>
+          {panel === 'split' &&
+            ([0, 1] as const).map((i) => (
+              <select key={i} value={split[i]} onChange={(e) => useApp.getState().setSplitView(i, e.target.value as View)} title={i ? 'Right half shows' : 'Left half shows'}>
+                {VIEWS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            ))}
         </div>
         <input ref={fileRef} type="file" accept=".json" hidden onChange={(e) => {
             const f = e.target.files?.[0];
@@ -150,13 +163,7 @@ export function App() {
 
       <LeftPanel />
       <div className="main">
-        {(panel === 'plan' || panel === 'split') && <PlanView />}
-        {(panel === 'elev' || panel === 'elev3d') && <ElevView />}
-        {(panel === '3d' || panel === 'split' || panel === 'elev3d') && (
-          <Suspense fallback={<div className="view3d muted" style={{ padding: 20 }}>Loading 3D…</div>}>
-            <View3D />
-          </Suspense>
-        )}
+        {(panel === 'split' ? split : [panel]).map((v) => PANES[v])}
         {toast && <div className="toast">{toast}</div>}
         <MeasureBox />
         <LogPanel />
