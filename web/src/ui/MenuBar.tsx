@@ -5,7 +5,7 @@ import { useApp, COLOR_BY, type ToolName, type View } from '../model/store';
 export const VIEWS: [View, string][] = [['plan', 'Plan'], ['3d', '3D'], ['elev', 'Elevation']];
 import { setTool } from '../plan/tools';
 import { fitAll } from '../plan/PlanView';
-import { downloadProject } from '../model/persist';
+import { chooseWorkFolder, downloadProject, saveProjectAs } from '../model/persist';
 import { deleteIds } from '../model/ops';
 import { toggleLog, useLog } from '../log/sessionLog';
 import { openDialog } from './dialogState';
@@ -191,6 +191,8 @@ export function MainMenu({ onNew, onOpen, onUnderlay }: { onNew: () => void; onO
         { label: 'New', run: onNew },
         { label: 'Open…', run: onOpen },
         { label: 'Save', kbd: 'Ctrl+S', run: downloadProject },
+        { label: 'Save As…', kbd: 'Ctrl+Shift+S', title: 'Save to a new file, starting in the working folder', run: saveProjectAs },
+        { label: 'Working folder…', title: 'Folder that Save As opens in by default', run: chooseWorkFolder },
         'sep',
         { label: 'Load underlay…', run: onUnderlay, title: 'Load a DXF (all stories in model space) or a PDF (one page per story)' },
         { label: 'Underlay setup…', run: () => openDialog({ kind: 'underlay' }) },

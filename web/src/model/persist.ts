@@ -32,9 +32,65 @@ export function startAutosave() {
   });
 }
 
+const projectJson = () => JSON.stringify({ app: 'stair-design', version: 1, model: useApp.getState().model, underlay: metaOf(useUnderlay.getState()) });
+
+// File System Access API (Chromium); lib.dom has no types for it yet
+type Writable = { write(d: string): Promise<void>; close(): Promise<void> };
+type FileHandle = { name: string; createWritable(): Promise<Writable> };
+type DirHandle = { name: string };
+const fsa = window as unknown as {
+  showDirectoryPicker?: (o: object) => Promise<DirHandle>;
+  showSaveFilePicker?: (o: object) => Promise<FileHandle>;
+};
+const FOLDER_KEY = 'work-folder';
+/** File the last Save As wrote; Save overwrites it. Cleared on New and Open. */
+let saveTarget: FileHandle | null = null;
+export const clearSaveTarget = () => void (saveTarget = null);
+
+const userAborted = (e: unknown) => e instanceof DOMException && e.name === 'AbortError';
+const fail = (e: unknown) => userAborted(e) || useApp.getState().setToast('Save error: ' + (e as Error).message);
+
+export async function chooseWorkFolder() {
+  if (!fsa.showDirectoryPicker) return useApp.getState().setToast('This browser cannot pick folders (use Chrome or Edge)');
+  try {
+    const d = await fsa.showDirectoryPicker({ id: 'stair-work', mode: 'readwrite', startIn: (await idbGet(FOLDER_KEY)) ?? 'documents' });
+    await idbSet(FOLDER_KEY, d);
+    log('file', `Working folder: ${d.name}`);
+  } catch (e) {
+    fail(e);
+  }
+}
+
+async function writeTo(h: FileHandle) {
+  const w = await h.createWritable();
+  await w.write(projectJson());
+  await w.close();
+  log('file', `Saved ${h.name}`);
+}
+
+export async function saveProjectAs() {
+  if (!fsa.showSaveFilePicker) return downloadFile();
+  try {
+    const h = await fsa.showSaveFilePicker({
+      suggestedName: saveTarget?.name ?? 'stair.sd.json',
+      startIn: saveTarget ?? (await idbGet(FOLDER_KEY)) ?? 'documents',
+      types: [{ description: 'Stair Design project', accept: { 'application/json': ['.sd.json', '.json'] } }],
+    });
+    await writeTo(h);
+    saveTarget = h;
+  } catch (e) {
+    fail(e);
+  }
+}
+
 export function downloadProject() {
-  const data = { app: 'stair-design', version: 1, model: useApp.getState().model, underlay: metaOf(useUnderlay.getState()) };
-  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  if (saveTarget) return writeTo(saveTarget).catch(fail);
+  if (fsa.showSaveFilePicker) return saveProjectAs();
+  downloadFile();
+}
+
+function downloadFile() {
+  const blob = new Blob([projectJson()], { type: 'application/json' });
   log('file', 'Saved stair.sd.json');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -46,6 +102,7 @@ export function downloadProject() {
 export async function openProject(file: File) {
   const j = JSON.parse(await file.text());
   if (!j.model) throw new Error('Not a Stair Design project');
+  clearSaveTarget();
   useApp.getState().setModel(loaded(j.model));
   // keep the loaded underlay file, apply saved scale/placement only if it is the same file
   if (j.underlay) applySavedMeta(j.underlay);
