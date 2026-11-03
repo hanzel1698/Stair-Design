@@ -19,6 +19,36 @@ export function frame(f: Flight) {
   return { L, w, r, u, v, O, H: f.n * f.R };
 }
 
+/** A flight grip: b0 bottom end, b1 top end, a0 / a1 the two long sides. */
+export type FlightEdge = 'b0' | 'b1' | 'a0' | 'a1';
+export const OPPOSITE: Record<FlightEdge, FlightEdge> = { b0: 'b1', b1: 'b0', a0: 'a1', a1: 'a0' };
+
+/** Grip points of a flight: the midpoints of its ends and long sides. */
+export function flightGrips(f: Flight): Record<FlightEdge, Pt> {
+  const { L, w, u, v, O } = frame(f);
+  const at = (s: number, q: number) => ({ x: O[0] + u[0] * s + v[0] * q, y: O[1] + u[1] * s + v[1] * q });
+  return { b0: at(0, w / 2), b1: at(L, w / 2), a0: at(L / 2, 0), a1: at(L / 2, w) };
+}
+
+/** Flight with one grip dragged to `p`, the opposite edge staying put: an end changes the riser count in whole treads (dragging the bottom keeps the top level), a side the width (≥ 300 mm). */
+export function reshapeFlight(f: Flight, edge: FlightEdge, p: Pt): Flight {
+  const { L, w, u, v, O } = frame(f);
+  const s = (p.x - O[0]) * u[0] + (p.y - O[1]) * u[1],
+    q = (p.x - O[0]) * v[0] + (p.y - O[1]) * v[1];
+  let b0 = 0,
+    b1 = L,
+    a0 = 0,
+    a1 = w;
+  if (edge === 'b1') b1 = Math.max(f.T, Math.round(s / f.T) * f.T);
+  else if (edge === 'b0') b0 = L - Math.max(f.T, Math.round((L - s) / f.T) * f.T);
+  else if (edge === 'a1') a1 = Math.max(300, Math.round(q));
+  else a0 = Math.min(w - 300, Math.round(q));
+  const n = Math.round((b1 - b0) / f.T) + 1;
+  const xs = [b0, b1].flatMap((b) => [a0, a1].map((a) => O[0] + u[0] * b + v[0] * a)),
+    ys = [b0, b1].flatMap((b) => [a0, a1].map((a) => O[1] + u[1] * b + v[1] * a));
+  return { ...f, n, width: a1 - a0, z0: edge === 'b0' ? f.z0 - (n - f.n) * f.R : f.z0, x: Math.min(...xs), y: Math.min(...ys) };
+}
+
 export const landingRect = (l: Landing): Rect => ({ x0: l.x, y0: l.y, x1: l.x + l.w, y1: l.y + l.h });
 export const rectPts = (r: Rect): Pt[] => [
   { x: r.x0, y: r.y0 },

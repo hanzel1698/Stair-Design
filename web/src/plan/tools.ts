@@ -1,5 +1,5 @@
 import { useApp, usePreview, drawStories, toast, visibleModel, type ToolName } from '../model/store';
-import type { Beam, Model, Pt, Span } from '../model/types';
+import type { Beam, Flight, Model, Pt, Span } from '../model/types';
 import { logAutoSizes } from '../log/sessionLog';
 import { autoSizeBeams, noFitNote, RANK_NAME } from '../model/autoBeam';
 import { addBeams, addColumns, addSlab, cachedStoryNodes, findBay, gridSegs, makeGrid, moveIds, nextGridLabel, onGridLine, panelSize, setBeamEnd, setGridEnd, slabsUnderBeams, splitSlabsByBeams } from '../model/ops';
@@ -10,7 +10,7 @@ import { viewport } from './viewport';
 import { useUnderlay, saveUnderlayMeta, regionFor, sheetFor, rescaleDxf, rectOf } from '../underlay/store';
 import { openDialog, useFramePick, useMovePick } from '../ui/dialogState';
 import { fitAll } from './PlanView';
-import { flightFrom, flightStory, frame, landingStory, levelGuess, nextNames, clip, landingRect, rectPts } from '../stair/stair';
+import { flightFrom, flightGrips, flightStory, frame, OPPOSITE, reshapeFlight, type FlightEdge, landingStory, levelGuess, nextNames, clip, landingRect, rectPts } from '../stair/stair';
 import { storyElevations } from '../model/types';
 
 const SNAP_PX = 12;
@@ -278,8 +278,10 @@ export function commitBeams(fn: (m: Model) => Model) {
 function flightHint(a: Pt, b: Pt) {
   const m = A().model,
     f = flightFrom(m, a, b, 0);
-  return f ? `${f.n} risers × ${f.R} = ${fmt(f.n * f.R)} rise · going ${fmt((f.n - 1) * f.T)} · width ${fmt(f.width)}` : liveText(a, b);
+  return f ? flightText(f) : liveText(a, b);
 }
+
+const flightText = (f: Flight) => `${f.n} risers × ${f.R} = ${fmt(f.n * f.R)} rise · going ${fmt((f.n - 1) * f.T)} · width ${fmt(f.width)}`;
 
 const distToSegLine = (p: Pt, [a, b]: [Pt, Pt]) => Math.abs(side(p, a, b)) / (dist(a, b) || 1);
 
@@ -697,7 +699,7 @@ export function fillIntersections(a: Pt, b: Pt) {
 // ---------- beam and grid end grips (select tool) ----------
 
 /** A beam, grid or span end, a landing corner (index into rectPts; the opposite corner stays put), or a span side midpoint (width, about the axis). */
-export type Grip = { id: string; end: 1 | 2 } | { id: string; corner: number } | { id: string; side: 1 | -1 };
+export type Grip = { id: string; end: 1 | 2 } | { id: string; corner: number } | { id: string; side: 1 | -1 } | { id: string; edge: FlightEdge };
 
 /** Span axis midpoint and unit normal. */
 function spanMid(sp: Span) {
@@ -749,6 +751,12 @@ export function gripAt(screen: Pt): Grip | null {
         const d = dist(w, q);
         if (d < bd) (bd = d), (best = g);
       }
+  for (const f of model.flights)
+    if (s.has(f.id) && flightStory(model, f) === activeStory)
+      for (const [edge, q] of Object.entries(flightGrips(f)) as [FlightEdge, Pt][]) {
+        const d = dist(w, q);
+        if (d < bd) (bd = d), (best = { id: f.id, edge });
+      }
   return best;
 }
 
@@ -761,6 +769,14 @@ function gripSnap(g: Grip, screen: Pt): { s: Snap; fixed: Pt; p: Pt } | null {
     const fixed = rectPts(landingRect(l))[(g.corner + 2) % 4];
     const s = snapPoint({ ...m, landings: m.landings.filter((x) => x.id !== g.id) }, viewport.toWorld(screen), SNAP_PX / viewport.k, { story: A().activeStory, from: fixed, ortho: false, underlay: A().show.underlay });
     return { s, fixed, p: s.p };
+  }
+  if ('edge' in g) {
+    const f = m.flights.find((x) => x.id === g.id);
+    if (!f) return null;
+    const s = snapPoint({ ...m, flights: m.flights.filter((x) => x.id !== g.id) }, viewport.toWorld(screen), SNAP_PX / viewport.k, { story: A().activeStory, from: flightGrips(f)[OPPOSITE[g.edge]], ortho: false, underlay: A().show.underlay });
+    // whole treads / whole mm: the preview runs between the reshaped flight's opposite grips
+    const nf = reshapeFlight(f, g.edge, s.p);
+    return { s, fixed: flightGrips(nf)[OPPOSITE[g.edge]], p: flightGrips(nf)[g.edge] };
   }
   if ('side' in g) {
     const sp = m.spans.find((x) => x.id === g.id);
@@ -788,7 +804,9 @@ function gripSnap(g: Grip, screen: Pt): { s: Snap; fixed: Pt; p: Pt } | null {
 export function gripMove(g: Grip, screen: Pt) {
   const r = gripSnap(g, screen);
   if (!r) return;
-  P().set({ grip: [r.fixed, r.p], cursor: r.p, snap: r.s.kind === 'none' ? null : r.s, hint: liveText(r.fixed, r.p) });
+  const f = 'edge' in g && A().model.flights.find((x) => x.id === g.id);
+  const hint = f ? flightText(reshapeFlight(f, g.edge, r.p)) : liveText(r.fixed, r.p);
+  P().set({ grip: [r.fixed, r.p], cursor: r.p, snap: r.s.kind === 'none' ? null : r.s, hint });
 }
 
 export function gripDrop(g: Grip, screen: Pt) {
@@ -800,6 +818,7 @@ export function gripDrop(g: Grip, screen: Pt) {
     if (Math.abs(b.x - a.x) < 100 || Math.abs(b.y - a.y) < 100) return toast('Landing is too small.');
     return A().commit((m) => ({ ...m, landings: m.landings.map((l) => (l.id === g.id ? { ...l, x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) } : l)) }));
   }
+  if ('edge' in g) return A().commit((m) => ({ ...m, flights: m.flights.map((f) => (f.id === g.id ? reshapeFlight(f, g.edge, r.p) : f)) }));
   const editSpan = (f: (x: Span) => Partial<Span>) => A().commit((m) => ({ ...m, spans: m.spans.map((x) => (x.id === g.id ? { ...x, ...f(x), auto: false } : x)) }));
   if ('side' in g) {
     const w = Math.round(dist(r.fixed, r.p));

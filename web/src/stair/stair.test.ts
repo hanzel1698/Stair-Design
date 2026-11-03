@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emptyModel, type Model } from '../model/types';
-import { analyze, autoSpans, beamLoads, beamName, kSlab, ssBeam, suggestWaist, tauC, template, withWaist } from './stair';
+import { analyze, autoSpans, beamLoads, beamName, flightGrips, kSlab, reshapeFlight, ssBeam, suggestWaist, tauC, template, withWaist } from './stair';
 
 describe('stair statics and IS 456 tables', () => {
   it('simply supported UDL and partial load', () => {
@@ -14,6 +14,23 @@ describe('stair statics and IS 456 tables', () => {
   it('reads tables', () => {
     expect(tauC(0.5, 25)).toBeCloseTo(0.49);
     expect(kSlab(200)).toBeCloseTo(1.2);
+  });
+});
+
+describe('flight grips', () => {
+  const f = { id: 'f', name: 'F1', x: 0, y: 0, dir: '-x' as const, n: 5, T: 250, R: 150, t: 150, width: 1000, z0: 0 };
+  it('top end adds whole treads, bottom stays put', () => {
+    const g = reshapeFlight(f, 'b1', { x: -200, y: 0 }); // going 1200 from x=1000 rounds to 5 treads
+    expect(g).toMatchObject({ n: 6, x: -250, y: 0, z0: 0 });
+  });
+  it('bottom end keeps the top level and position', () => {
+    const g = reshapeFlight(f, 'b0', { x: 1240, y: 500 });
+    expect(g).toMatchObject({ n: 6, x: 0, z0: -150 });
+    expect(flightGrips(g).b1).toEqual(flightGrips(f).b1);
+  });
+  it('side changes the width only', () => {
+    expect(reshapeFlight(f, 'a0', { x: 500, y: -200 })).toMatchObject({ n: 5, x: 0, y: -200, width: 1200 });
+    expect(reshapeFlight(f, 'a1', { x: 500, y: 100 }).width).toBe(300);
   });
 });
 
