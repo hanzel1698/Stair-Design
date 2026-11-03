@@ -405,7 +405,10 @@ export function resultsHtml(m: Model, act = false) {
 <table><tr><th>Beam</th><th>Grid</th><th>Length (m)</th><th>From span</th><th>Start (m)</th><th>End (m)</th><th>Dead (kN/m)</th><th>Live (kN/m)</th><th>Factored (kN/m)</th></tr>`;
   for (const [b, rows] of out) {
     const L = Math.hypot(b.x2 - b.x1, b.y2 - b.y1) / 1000;
-    if (!rows.length) continue;
+    if (!rows.length) {
+      h += `<tr><td>${esc(beamTag(m, b))}</td><td>${esc(gridRef(m, b))}</td><td>${f2(L)}</td><td colspan="6" class="info">No stair load — no span bears on this beam</td></tr>`;
+      continue;
+    }
     rows.forEach((r, i) => (h += `<tr><td>${i ? '' : esc(beamTag(m, b))}</td><td>${i ? '' : esc(gridRef(m, b))}</td><td>${i ? '' : f2(L)}</td><td>${esc(r.sp.name)}</td><td>${f2(r.a / 1000)}</td><td>${f2(r.b / 1000)}</td><td>${f2(r.dl)}</td><td>${f2(r.ll)}</td><td>${f2(r.fu)}</td></tr>`));
   }
   h += '</table>';
