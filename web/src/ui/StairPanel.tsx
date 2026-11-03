@@ -240,14 +240,14 @@ function suggestHtml(m: Model, act: boolean) {
   return `<div class="info">Suggested slab thickness: <b>${s.t} mm</b> — the least that passes flexure, shear and deflection on every span (thumb rule L/20 of the longest span = ${s.thumb} mm). ${act && !same ? `<button data-t="${s.t}">Use ${s.t} mm for all flights &amp; landings</button>` : ''}</div>`;
 }
 
-/** In-app only: deflection failures up front, with the waist that makes every span pass. */
+/** In-app only: deflection failures up front. */
 function deflAlert(m: Model) {
   const bad = m.spans.flatMap((sp) => {
     const d = analyze(m, sp)?.des;
     return d && !d.defl ? [`<li>${esc(sp.name)}: L/d = ${f2(d.ld, 2)} &gt; (L/d)_allow = ${f2(d.ldAllow, 2)} (waist ${d.D} mm)</li>`] : [];
   });
   if (!bad.length) return '';
-  return `<div class="card"><b class="ng">Deflection fails on ${bad.length} span${bad.length > 1 ? 's' : ''}</b><ul>${bad.join('')}</ul>${suggestHtml(m, true)}</div>`;
+  return `<div class="card"><b class="ng">Deflection fails on ${bad.length} span${bad.length > 1 ? 's' : ''}</b><ul>${bad.join('')}</ul></div>`;
 }
 
 const NOTATION: [string, string, string][] = [
@@ -396,7 +396,7 @@ export function resultsHtml(m: Model, act = false) {
   const p = m.stair,
     { out, warn } = beamLoads(m),
     fig = { n: 2 };
-  let h = act ? deflAlert(m) : '';
+  let h = suggestHtml(m, act) + (act ? deflAlert(m) : '');
   h += `<h2>Stair layout</h2>${planSvg(m)}${notationHtml()}`;
   if (m.flights.length) h += '<h2>Flight elevations</h2>' + m.flights.map((f) => flightSvg(f, fig.n++)).join('');
   h += unitWeightsHtml(m, fig);
@@ -412,7 +412,7 @@ export function resultsHtml(m: Model, act = false) {
   for (const [b, rows] of out) h += beamLoadSvg(m, b, rows, rows.length ? fig.n++ : 0);
   h += beamTrail(m, out);
   if (warn.length) h += '<div class="card"><b class="ng">Warnings</b><ul>' + warn.map((w) => `<li>${esc(w)}</li>`).join('') + '</ul></div>';
-  h += `<h2>Slab design — IS 456:2000</h2><div class="info">M${p.fck} / Fe${p.fy}, clear cover ${p.cover} mm, main Ø${p.bar}, distribution Ø${p.dbar}, finishes ${p.ff} kN/m², live ${p.ll} kN/m², γc ${p.gc} kN/m³, γf ${p.gf}. Each span is a 1 m wide simply supported strip; effective span = c/c of supports measured horizontally (cl 33.1); depth = waist normal to the soffit (cl 33.3).</div>${suggestHtml(m, act)}`;
+  h += `<h2>Slab design — IS 456:2000</h2><div class="info">M${p.fck} / Fe${p.fy}, clear cover ${p.cover} mm, main Ø${p.bar}, distribution Ø${p.dbar}, finishes ${p.ff} kN/m², live ${p.ll} kN/m², γc ${p.gc} kN/m³, γf ${p.gf}. Each span is a 1 m wide simply supported strip; effective span = c/c of supports measured horizontally (cl 33.1); depth = waist normal to the soffit (cl 33.3).</div>`;
   for (const sp of m.spans) {
     const A = analyze(m, sp);
     if (!A) {
