@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { snapPoint } from './snap';
 import { emptyModel, type Model } from '../model/types';
+import { landingStory } from '../stair/stair';
 
 describe('intersection snap', () => {
   it('snaps to the crossing of two beams', () => {
@@ -25,5 +26,15 @@ describe('intersection snap', () => {
     const s = snapPoint(m, { x: 2550, y: 3920 }, 200, { story: 'Story1' });
     expect(s.kind).toBe('intersection');
     expect(s.p).toEqual({ x: 2500, y: 4000 });
+  });
+});
+
+describe('stair snaps', () => {
+  it('snaps to landing corners and edge midpoints', () => {
+    const l = { id: 'l', name: 'L1', x: 0, y: 0, w: 2000, h: 1200, t: 150, z: 0 };
+    const m = { ...emptyModel(), landings: [l] };
+    const story = landingStory(m, l);
+    expect(snapPoint(m, { x: 1960, y: 30 }, 200, { story }).p).toEqual({ x: 2000, y: 0 });
+    expect(snapPoint(m, { x: 1020, y: 1180 }, 200, { story })).toEqual({ p: { x: 1000, y: 1200 }, kind: 'mid' });
   });
 });

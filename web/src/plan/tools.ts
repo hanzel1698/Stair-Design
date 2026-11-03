@@ -182,7 +182,7 @@ export function doSnap(screen: Pt): Snap {
   const from = rub.length ? rub[rub.length - 1] : null;
   // region corners and reference point are raw DXF points: never snap them to model elements
   const m = visibleModel(A());
-  return snapPoint(t === 'region' ? { ...m, grids: [], columns: [], beams: [], slabs: [] } : m, w, SNAP_PX / viewport.k, {
+  return snapPoint(t === 'region' ? { ...m, grids: [], columns: [], beams: [], slabs: [], flights: [], landings: [] } : m, w, SNAP_PX / viewport.k, {
     story: A().activeStory,
     from,
     ortho: A().ortho && t !== 'region', // a box's opposite corner must not be locked level with the first
