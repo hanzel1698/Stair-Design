@@ -451,7 +451,10 @@ function stairMeshes(m: Model, sel: Set<string>, vis: (story: string) => boolean
     if (!vis(flightStory(m, f))) continue;
     const F = flightFrame(f);
     const geo = new THREE.ExtrudeGeometry(new THREE.Shape(profile(f).map(([s, z]) => new THREE.Vector2(s * S, z * S))), { depth: F.w * S, bevelEnabled: false });
-    geo.applyMatrix4(new THREE.Matrix4().makeBasis(V(...F.u), new THREE.Vector3(0, 1, 0), V(...F.v)).setPosition(F.O[0] * S, f.z0 * S, -F.O[1] * S));
+    const place = new THREE.Matrix4().makeBasis(V(...F.u), new THREE.Vector3(0, 1, 0), V(...F.v)).setPosition(F.O[0] * S, f.z0 * S, -F.O[1] * S);
+    // a mirrored basis (+x, -y flights) would turn the faces inside out: pre-mirror the extrusion depth so the net transform is a rotation
+    if (place.determinant() < 0) geo.applyMatrix4(new THREE.Matrix4().makeScale(1, 1, -1).setPosition(0, 0, F.w * S));
+    geo.applyMatrix4(place);
     const mesh = new THREE.Mesh(geo, sel.has(f.id) ? selMat : mat('__flight', '#7aa2f7'));
     mesh.userData.id = f.id;
     out.push(mesh);
