@@ -495,7 +495,7 @@ function Overlay() {
       items.push(<path key="midm" d={`M${m.x} ${m.y - 7}L${m.x + 7} ${m.y + 6}L${m.x - 7} ${m.y + 6}Z`} fill="none" stroke={c} strokeWidth={2} />);
     }
   }
-  if (tool !== 'select') pv.tracks.forEach((q, i) => {
+  pv.tracks.forEach((q, i) => {
     const t = S(q);
     items.push(<path key={'trk' + i} d={`M${t.x - 4} ${t.y}h8M${t.x} ${t.y - 4}v8`} stroke="#9ad" />);
   });
