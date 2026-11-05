@@ -5,7 +5,7 @@ import { autoSizeBeams, noFitNote, RANK_NAME } from '../model/autoBeam';
 import { addBeams, addColumns, addSlab, cachedStoryNodes, findBay, gridSegs, makeGrid, moveIds, nextGridLabel, onGridLine, panelSize, setBeamEnd, setGridEnd, slabsUnderBeams, splitSlabsByBeams } from '../model/ops';
 import { columnOn, uid } from '../model/types';
 import { add, angleDeg, dist, fmt, offsetSeg, parseRelative, polyArea, projectOnSeg, segIntersect, side, sub, distToSeg, lineIntersect } from '../model/geom';
-import { snapPoint, cachedIntersections, columnOutline, type Snap, type SnapKind } from './snap';
+import { snapPoint, trackSnap, cachedIntersections, columnOutline, type Snap, type SnapKind } from './snap';
 import { viewport } from './viewport';
 import { useUnderlay, saveUnderlayMeta, regionFor, sheetFor, rescaleDxf, rectOf } from '../underlay/store';
 import { openDialog, useFramePick, useMovePick } from '../ui/dialogState';
@@ -54,7 +54,7 @@ export function resetTool() {
   calibStage = 'dist';
   offsetSrc = null;
   const hint = redrawId && A().tool === 'region' ? `Redraw region (${useUnderlay.getState().regions.find((r) => r.id === redrawId)?.stories.join(', ')}): click two corners around its plan.` : hints[A().tool];
-  P().set({ rubber: [], rubberClosed: false, box: null, measure: null, panel: null, offsetLine: null, input: '', track: null, mid: null, hint });
+  P().set({ rubber: [], rubberClosed: false, box: null, measure: null, panel: null, offsetLine: null, input: '', track: null, tracks: [], mid: null, hint });
 }
 
 // ---------- mid between two points ----------
@@ -182,14 +182,21 @@ export function doSnap(screen: Pt): Snap {
   const from = rub.length ? rub[rub.length - 1] : null;
   // region corners and reference point are raw DXF points: never snap them to model elements
   const m = visibleModel(A());
-  return snapPoint(t === 'region' ? { ...m, grids: [], columns: [], beams: [], slabs: [] } : m, w, SNAP_PX / viewport.k, {
+  const tol = SNAP_PX / viewport.k;
+  const s = snapPoint(t === 'region' ? { ...m, grids: [], columns: [], beams: [], slabs: [] } : m, w, tol, {
     story: A().activeStory,
     from,
     ortho: A().ortho && t !== 'region', // a box's opposite corner must not be locked level with the first
     underlay: A().show.underlay,
     only: snapKindsFor(t),
   });
+  // a real point snap wins; otherwise line up with points hovered earlier
+  if (t === 'region' || (s.kind !== 'none' && s.kind !== 'near' && s.kind !== 'ortho')) return s;
+  return trackSnap(w, P().tracks, tol) ?? s;
 }
+
+const MAX_TRACKS = 4;
+const TRACK_KINDS: SnapKind[] = ['intersection', 'column', 'end', 'mid'];
 
 function liveText(from: Pt, to: Pt) {
   return `L=${fmt(dist(from, to))}  ∠${fmt(angleDeg(from, to), 1)}°  dx=${fmt(to.x - from.x)} dy=${fmt(to.y - from.y)}`;
@@ -215,7 +222,11 @@ export function onMove(screen: Pt) {
     upd.pick = h && { a: h.a, p: h.p, text: `${fmt(h.t * h.len / 1000, 3)} m · ${fmt(h.t, 3)} of ${fmt(h.len / 1000, 3)} m` };
     return p.set(upd);
   }
-  if (s.kind !== 'none' && s.kind !== 'near' && s.kind !== 'ortho') upd.track = s.p;
+  if (s.kind !== 'none' && s.kind !== 'near' && s.kind !== 'ortho' && s.kind !== 'track') upd.track = s.p;
+  if (TRACK_KINDS.includes(s.kind) && t !== 'region') {
+    const q = s.p;
+    upd.tracks = [...p.tracks.filter((x) => x.x !== q.x || x.y !== q.y), q].slice(-MAX_TRACKS);
+  }
   const last = p.rubber[p.rubber.length - 1];
   if (t === 'landing' && p.rubber.length === 1) upd.box = { a: p.rubber[0], b: s.p };
   if (last && t === 'flight') upd.hint = flightHint(last, s.p);
